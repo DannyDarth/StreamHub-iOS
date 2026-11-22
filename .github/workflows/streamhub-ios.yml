@@ -39,12 +39,23 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path >/dev/null
           echo "Verified supported Xcode toolchain: $XCODE_VERSION with iPhoneOS SDK"
       - name: Install and verify XcodeGen 2.46.0
+        env:
+          XCODEGEN_VERSION: "2.46.0"
+          # sha256 of xcodegen.zip from https://github.com/yonaskolb/XcodeGen/releases/tag/2.46.0
+          XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
         run: |
-          brew install xcodegen
-          INSTALLED_VERSION="$(xcodegen --version)"
+          set -euo pipefail
+          # Homebrew only offers the newest XcodeGen, so fetch the reviewed release directly
+          # and refuse it unless the checksum matches.
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          INSTALLED_VERSION="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
           echo "Installed XcodeGen: $INSTALLED_VERSION"
-          if [ "$INSTALLED_VERSION" != "Version: 2.46.0" ] && [ "$INSTALLED_VERSION" != "2.46.0" ]; then
-            echo "::error::Expected XcodeGen 2.46.0; refusing to build with an unreviewed version"
+          if [ "$INSTALLED_VERSION" != "Version: ${XCODEGEN_VERSION}" ] && [ "$INSTALLED_VERSION" != "${XCODEGEN_VERSION}" ]; then
+            echo "::error::Expected XcodeGen ${XCODEGEN_VERSION}; refusing to build with an unreviewed version"
             exit 1
           fi
       - name: Prepare selected StreamHub app icon
