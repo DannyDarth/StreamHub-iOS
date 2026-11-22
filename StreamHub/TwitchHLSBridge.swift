@@ -211,7 +211,8 @@ final class TwitchHLSBridge {
         let matchedKinds = markerKinds.filter { marker, _ in
             lines.contains { $0.localizedCaseInsensitiveContains(marker) }
         }.map { $0.1 }
-        let adActive = !matchedKinds.isEmpty
+        // only Twitch's stitched-ad markers mean ads: other date ranges are normal stream metadata
+        let adActive = TwitchAdMarkers.contains(playlist)
         let segmentCount = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }.count
         let hasEndList = lines.contains { $0.hasPrefix("#EXT-X-ENDLIST") }
         lock.lock()

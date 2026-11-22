@@ -16,6 +16,17 @@ The GitHub-hosted macOS runner supplies Xcode. XcodeGen creates the Xcode projec
 This is a **foundation build**, not a functional streaming client yet. Twitch/Kick APIs, stream playback, and branding assets remain to be implemented and validated.
 
 
+## Ad-free Twitch playback
+
+Ads must not interrupt streams. When you open a Twitch channel, StreamHub plays it through an ad-free route, the same way StreamHub desktop does with streamlink-ttvlol: the playback token and stream playlist are requested through a proxy in a country where Twitch doesn't show ads (perfprod HTTP proxies first, then TTV.LOL-style playlist proxies). The video itself then loads directly from Twitch.
+
+- Before playing, StreamHub checks that the stream doesn't start with ads; if it does, the next server is tried.
+- If an ad still shows up during playback, StreamHub switches to the next server.
+- If no server works, the stream doesn't play. It never falls back to Twitch with ads on its own; the regular Twitch player is only used if you choose it in the menu.
+- A badge in the corner of the video shows the status: green **Ad-free · via server**, amber when an ad was detected, red when no ad-free stream is available. Tap it to hide it.
+
+The proxies are run by the TTV LOL PRO / Luminous community and see which channel you open and your IP address.
+
 ## Experimental TwitchAdBlock playback adapter
 
 StreamHub iOS preserves StreamHub's existing SwiftUI/WKWebView Twitch/Kick interface and adds an opt-in **Play with TwitchAdBlock engine (experimental)** button in the native Twitch player. Its standalone Swift networking adapts the randomized playback-platform token technique from [level3tjg/TwitchAdBlock](https://github.com/level3tjg/TwitchAdBlock) (MIT license) and first attempts that author's Luminous HTTPS playlist endpoint before falling back to direct HLS using a randomized token. It does **not** package, inject, or redistribute TwitchAdBlock's prepatched Twitch IPAs or private Twitch-app hooks.
