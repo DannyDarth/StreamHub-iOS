@@ -21,14 +21,14 @@ Reviewed through tested application commit: `c42ba4e3986bb97bee2d2d7d3be511957ca
 5. Reviewed `FilteredWebPlayer.swift`, `FollowedView.swift`, and `TwitchBrowserView.swift`: HTTPS navigation restrictions, credential-bearing URL rejection, limited about:blank handling, untrusted top-level redirect blocking, and Web Inspector disabled on supported iOS versions.
 6. Reviewed `KickDirectory.swift` and `KickGamesDirectory.swift`: HTTPS endpoint and expected-host validation, 2xx response checks, and 5 MB response limits before JSON parsing. Artwork URLs are HTTPS-only.
 7. Reviewed `TwitchProxyPlaylistResolver.swift`: token-bearing playlist URLs are not included in surfaced proxy error messages in the reviewed paths.
-8. `ios/project.yml` does not request the former `NSAllowsLocalNetworking` exception.
+8. `project.yml` does not request the former `NSAllowsLocalNetworking` exception.
 
 ## Dependency and secrets review
 
-- `ios/project.yml` contains no declared external Swift package dependencies; the reviewed iOS sources use Apple frameworks (Foundation, SwiftUI, WebKit, Combine).
-- `ios/StreamHub/AdBlockingSettings.swift` uses WebKit content rule lists, not an additional package.
+- `project.yml` contains no declared external Swift package dependencies; the reviewed iOS sources use Apple frameworks (Foundation, SwiftUI, WebKit, Combine).
+- `StreamHub/AdBlockingSettings.swift` uses WebKit content rule lists, not an additional package.
 - Build tooling dependencies include Xcode/XcodeGen, Homebrew and the pinned GitHub Actions. The macOS runner and Xcode versions are version-family constrained rather than immutable image hashes.
-- No `ios/Package.resolved`, `ios/StreamHub/Info.plist`, or iOS `Podfile` was verified through the targeted file reads. The workflow generates the app Info.plist.
+- No `Package.resolved`, `StreamHub/Info.plist`, or iOS `Podfile` was verified through the targeted file reads. The workflow generates the app Info.plist.
 - Targeted GitHub code-search queries on the **default branch** for common secret markers (`AKIA`, `BEGIN PRIVATE KEY`, `client_secret`, `github_pat_`, `sk_live_`) returned no matches. This is **not a comprehensive secrets scan**: GitHub search covers the default branch, not necessarily the audit branch, and simple string searches miss many secret formats and git history.
 - No credential value is reproduced in this audit. The repository's full history, dependency vulnerability databases, binary assets and generated IPA were not independently scanned here.
 

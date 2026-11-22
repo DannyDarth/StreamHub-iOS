@@ -1,0 +1,8 @@
+# Xcode / XcodeGen output
+StreamHub.xcodeproj/
+DerivedData/
+build/
+dist/
+*.ipa
+xcuserdata/
+.DS_Store
