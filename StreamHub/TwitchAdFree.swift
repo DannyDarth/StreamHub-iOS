@@ -50,6 +50,21 @@ enum TwitchAdFreeResolver {
         let route: Route
         let masterURL: URL
         let masterPlaylist: String
+
+        /// The best video variant (Twitch lists the highest quality first). AVPlayer plays this
+        /// media playlist directly, like streamlink-ttvlol loads media playlists directly.
+        var mediaURL: URL? {
+            let lines = masterPlaylist.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            for (index, line) in lines.enumerated() where line.hasPrefix("#EXT-X-STREAM-INF") {
+                // skip audio-only variants (no RESOLUTION attribute)
+                guard line.contains("RESOLUTION="), index + 1 < lines.count else { continue }
+                let uri = lines[index + 1]
+                if !uri.isEmpty, !uri.hasPrefix("#"), let url = URL(string: uri, relativeTo: masterURL)?.absoluteURL {
+                    return url
+                }
+            }
+            return nil
+        }
     }
 
     enum Failure: Error {
@@ -146,15 +161,14 @@ enum TwitchAdFreeResolver {
         return Resolved(route: route, masterURL: url, masterPlaylist: master)
     }
 
-    /// Check one media playlist before playing, so a stream that starts with ads is skipped.
+    /// Check the media playlist before playing, so a stream that starts with ads is skipped.
     private static func firstMediaPlaylistHasAds(_ resolved: Resolved) async throws -> Bool {
-        guard let line = resolved.masterPlaylist
-                .split(separator: "\n")
-                .map({ $0.trimmingCharacters(in: .whitespaces) })
-                .first(where: { !$0.isEmpty && !$0.hasPrefix("#") }),
-              let mediaURL = URL(string: line, relativeTo: resolved.masterURL)?.absoluteURL else {
-            return false
-        }
+        guard let mediaURL = resolved.mediaURL else { throw Failure.unavailable }
+        return await mediaPlaylistHasAds(mediaURL)
+    }
+
+    /// Fetch a media playlist and check it for Twitch's ad markers (false if it can't be loaded).
+    static func mediaPlaylistHasAds(_ mediaURL: URL) async -> Bool {
         var request = URLRequest(url: mediaURL)
         request.timeoutInterval = 10
         addPlayerHeaders(&request)
@@ -258,7 +272,7 @@ struct TwitchAdFreePlayerView: View {
     }
 
     @State private var player: AVPlayer?
-    @State private var bridge: TwitchHLSBridge?
+    @State private var adWatcher: Task<Void, Never>?
     @State private var phase: Phase = .connecting
     @State private var routeIndex = 0
     @State private var attempt = UUID()
@@ -383,11 +397,11 @@ struct TwitchAdFreePlayerView: View {
     private func stop() {
         attempt = UUID()
         badgeHideTask?.cancel()
+        adWatcher?.cancel()
+        adWatcher = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
-        bridge?.stop()
-        bridge = nil
     }
 
     /// Try the routes in order, starting at `index`; play the first one without ads.
@@ -414,39 +428,21 @@ struct TwitchAdFreePlayerView: View {
             }
         }
         guard attempt == current else { return }
+        adWatcher?.cancel()
+        adWatcher = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
-        bridge?.stop()
-        bridge = nil
         phase = .failed("No ad-free stream is available right now: every server failed or served ads. StreamHub won't play the stream with ads.")
         flashBadge()
     }
 
     @MainActor
     private func play(_ resolved: TwitchAdFreeResolver.Resolved, routeIndex index: Int, attemptID: UUID) async -> Bool {
-        // the bridge serves the proxied master playlist locally and watches media playlists for ads;
-        // no proxy endpoints: media playlists and segments load directly
-        let newBridge = TwitchHLSBridge(preferred: TwitchForwardProxyDiagnostics.firefox, endpoints: [])
-        newBridge.onAdMarkerDetected = { [weak newBridge] in
-            Task { @MainActor in
-                guard let newBridge, bridge === newBridge else { return }
-                adsGotThrough += 1
-                phase = .switching
-                flashBadge()
-                await start(from: routeIndex + 1)
-            }
-        }
-        guard let localURL = try? await newBridge.start(masterURL: resolved.masterURL, masterPlaylist: resolved.masterPlaylist),
-              attempt == attemptID else {
-            newBridge.stop()
-            return false
-        }
+        guard let mediaURL = resolved.mediaURL, attempt == attemptID else { return false }
 
-        let oldBridge = bridge
-        bridge = newBridge
         routeIndex = index
-        let item = AVPlayerItem(url: localURL)
+        let item = AVPlayerItem(url: mediaURL)
         if let player {
             player.replaceCurrentItem(with: item)
             player.play()
@@ -455,9 +451,31 @@ struct TwitchAdFreePlayerView: View {
             player = newPlayer
             newPlayer.play()
         }
-        oldBridge?.stop()
         phase = .playing(server: resolved.route.label)
         flashBadge()
+        watchForAds(mediaURL, attemptID: attemptID)
         return true
+    }
+
+    /// Re-check the playing media playlist every few seconds; switch servers if ads show up.
+    @MainActor
+    private func watchForAds(_ mediaURL: URL, attemptID: UUID) {
+        adWatcher?.cancel()
+        adWatcher = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard !Task.isCancelled, attempt == attemptID else { return }
+                if await TwitchAdFreeResolver.mediaPlaylistHasAds(mediaURL) {
+                    guard !Task.isCancelled, attempt == attemptID else { return }
+                    // don't show the ad while another server is found
+                    player?.pause()
+                    adsGotThrough += 1
+                    phase = .switching
+                    flashBadge()
+                    await start(from: routeIndex + 1)
+                    return
+                }
+            }
+        }
     }
 }
