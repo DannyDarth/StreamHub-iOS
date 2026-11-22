@@ -46,7 +46,7 @@ struct FollowedView: View {
             }
         }
         .fullScreenCover(item: $selectedTwitchChannel) { selection in
-            TwitchEmbeddedPlayerView(channel: selection.name, onReturnToWebPlayer: {
+            TwitchAdFreePlayerView(channel: selection.name, onReturnToWebPlayer: {
                 selectedTwitchChannel = nil
                 UIApplication.shared.open(URL(string: "https://www.twitch.tv/" + selection.name)!)
             })

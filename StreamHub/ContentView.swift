@@ -180,7 +180,7 @@ private struct TwitchDirectoryView: View {
             })
                 .id(browserResetID)
                 .fullScreenCover(item: $proxyChannel) { channel in
-                    TwitchEmbeddedPlayerView(channel: channel.value, onReturnToWebPlayer: {
+                    TwitchAdFreePlayerView(channel: channel.value, onReturnToWebPlayer: {
                         proxyChannel = nil
                         webChannel = channel.value
                     })
