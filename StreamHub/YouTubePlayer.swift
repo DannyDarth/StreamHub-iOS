@@ -46,6 +46,39 @@ enum YouTubeStream {
         return found
     }
 
+    /// What the stream's server answers, step by step (shown when a stream won't play):
+    /// the master playlist, one quality's playlist and its first piece of video.
+    static func probe(_ resolved: Resolved) async -> String {
+        func get(_ url: URL, range: Bool = false) async -> (Int, String) {
+            var request = URLRequest(url: url, timeoutInterval: 10)
+            request.setValue(resolved.userAgent, forHTTPHeaderField: "User-Agent")
+            if range { request.setValue("bytes=0-2047", forHTTPHeaderField: "Range") }
+            guard let (data, response) = try? await URLSession.shared.data(for: request) else { return (-1, "") }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return (status, String(decoding: data.prefix(200_000), as: UTF8.self))
+        }
+        func firstURI(_ playlist: String, base: URL) -> URL? {
+            for line in playlist.split(whereSeparator: \.isNewline) where !line.hasPrefix("#") && !line.isEmpty {
+                return URL(string: String(line), relativeTo: base)?.absoluteURL
+            }
+            return nil
+        }
+        var steps: [String] = []
+        let (masterStatus, master) = await get(resolved.url)
+        steps.append("master \(masterStatus)")
+        if masterStatus == 200, let variant = firstURI(master, base: resolved.url) {
+            let (variantStatus, playlist) = await get(variant)
+            steps.append("quality \(variantStatus)")
+            if variantStatus == 200, let segment = firstURI(playlist, base: variant) {
+                let (segmentStatus, _) = await get(segment, range: true)
+                steps.append("video \(segmentStatus)")
+            }
+        } else if masterStatus == 200 {
+            steps.append("no qualities: " + String(master.prefix(80)))
+        }
+        return steps.joined(separator: " · ")
+    }
+
     private static func checked(_ string: String) -> URL? {
         guard let url = URL(string: string), url.scheme == "https", let host = url.host,
               host.hasSuffix(".googlevideo.com") || host.hasSuffix(".youtube.com") else { return nil }
@@ -149,7 +182,8 @@ final class YouTubePlayerModel: ObservableObject {
                 player.replaceCurrentItem(with: item)
                 player.play()
                 if let problem = await ready(item) {
-                    problems.append("\(resolved.source): \(problem)")
+                    let probe = await YouTubeStream.probe(resolved)
+                    problems.append("\(resolved.source): \(problem)\n\(probe)")
                     continue
                 }
                 state = .playing(resolved)
