@@ -45,6 +45,12 @@ struct YTAccount: Codable {
     let avatar: String?
 }
 
+private struct Envelope<Items: Decodable>: Decodable {
+    let status: Int
+    let items: Items?
+    let error: String?
+}
+
 enum YouTubeError: LocalizedError {
     case signedOut
     case failed(String)
@@ -112,11 +118,6 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
         let raw = try await view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .defaultClient)
         guard let json = raw as? String, let data = json.data(using: .utf8) else {
             throw YouTubeError.failed("YouTube sent an unexpected answer.")
-        }
-        struct Envelope<Items: Decodable>: Decodable {
-            let status: Int
-            let items: Items?
-            let error: String?
         }
         let envelope = try JSONDecoder().decode(Envelope<T>.self, from: data)
         if envelope.status == 401 { throw YouTubeError.signedOut }

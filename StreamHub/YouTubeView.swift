@@ -115,7 +115,10 @@ struct YouTubeView: View {
     private func signOut() async {
         let store = WKWebsiteDataStore.default()
         let records = await store.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
-        let google = records.filter { ["youtube.com", "google.com"].contains { d in $0.displayName == d || $0.displayName.hasSuffix("." + d) } }
+        let google = records.filter { record in
+            let name = record.displayName
+            return ["youtube.com", "google.com"].contains { name == $0 || name.hasSuffix("." + $0) }
+        }
         await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: google)
         await refreshAccount()
         reloadToken += 1
