@@ -1,3 +1,4 @@
+import WebKit
 import SwiftUI
 
 /// Clean slate for Twitch playback experiments. The previous adblocking and
@@ -16,9 +17,41 @@ struct SettingsView: View {
 
     @AppStorage(UpdateChecker.enabledKey) private var checkForUpdates = true
     @ObservedObject private var updates = UpdateChecker.shared
+    @State private var signOutConfirm = false
+    @State private var signedOut = false
+
+    private func signOut() {
+        SignInVault.clear()
+        let store = WKWebsiteDataStore.default()
+        let domains = ["twitch.tv", "kick.com", "crunchyroll.com"]
+        store.fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
+            let matching = records.filter { record in
+                domains.contains { record.displayName == $0 || record.displayName.hasSuffix("." + $0) }
+            }
+            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: matching) {
+                signedOut = true
+            }
+        }
+    }
 
     var body: some View {
         Form {
+            Section {
+                Button("Sign out of Twitch, Kick and Crunchyroll", role: .destructive) {
+                    signOutConfirm = true
+                }
+                .confirmationDialog("Sign out of Twitch, Kick and Crunchyroll?", isPresented: $signOutConfirm,
+                                    titleVisibility: .visible) {
+                    Button("Sign out", role: .destructive) { signOut() }
+                }
+                if signedOut {
+                    Text("Signed out.").font(.footnote).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Sign-ins")
+            } footer: {
+                Text("Your sign-ins are kept on this iPhone when you install a new version, so you don't have to sign in (and do two-factor) again. They're saved in the iPhone's Keychain and never leave the device.")
+            }
             Section("Playback") {
                 Text("Twitch streams play ad-free through StreamHub's ad-free servers. Kick uses its regular player.")
                 Text("Ads never interrupt a Twitch stream: if no ad-free server works, the stream doesn't play. The regular Twitch player is only used if you choose it.")
