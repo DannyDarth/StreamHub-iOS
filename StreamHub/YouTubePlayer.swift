@@ -230,16 +230,50 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           }
         }
       }, 250);
-      // 4. start playing once the player is there (the mobile page waits for a tap otherwise)
+      // 4. on YouTube's mobile page: start playing with sound (YouTube starts it muted), and show
+      //    only the player. Only what's beside the player is hidden, never what holds it.
       if (location.hostname === "m.youtube.com" && window.top === window) {
-        let tries = 0;
-        const start = setInterval(() => {
+        let unmuted = false;
+        const isolate = () => {
+          const holder = document.querySelector("#player-container-id")
+            || (document.querySelector(".html5-video-player") || {}).parentElement;
+          if (!holder) return;
+          let node = holder;
+          while (node && node !== document.documentElement) {
+            const parent = node.parentElement;
+            if (!parent) break;
+            for (const sibling of parent.children) {
+              if (sibling !== node && !sibling.contains(holder) && !/^(SCRIPT|STYLE|LINK)$/.test(sibling.tagName)) {
+                sibling.style.setProperty("display", "none", "important");
+              }
+            }
+            node = parent;
+          }
+          for (const [k, v] of Object.entries({ position: "fixed", top: "0", left: "0", width: "100vw", height: "100vh",
+                                                "max-height": "none", margin: "0", padding: "0", "z-index": "2147483000", background: "#000" })) {
+            holder.style.setProperty(k, v, "important");
+          }
+          document.documentElement.style.setProperty("background", "#000", "important");
+          document.body && document.body.style.setProperty("overflow", "hidden", "important");
+        };
+        const tick = setInterval(() => {
+          isolate();
           const video = document.querySelector("video");
-          if (video && video.readyState > 0) {
-            clearInterval(start);
-            video.play().catch(() => document.querySelector(".ytp-large-play-button, .ytmCuedOverlayPlayButton, button.icon-button")?.click());
-          } else if (++tries > 80) clearInterval(start);
-        }, 250);
+          const player = document.querySelector(".html5-video-player");
+          const ad = player && player.classList.contains("ad-showing");
+          if (video && video.readyState > 0 && !ad) {
+            if (video.paused && !unmuted) {
+              video.play().catch(() => document.querySelector(".ytp-large-play-button, .ytmCuedOverlayPlayButton")?.click());
+            }
+            if (!unmuted && !video.paused) {
+              unmuted = true;
+              video.muted = false;
+              try { player && player.unMute && player.unMute(); } catch (e) {}
+              document.querySelectorAll(".ytp-unmute, .ytmUnmuteButton, .unmute-button, button[aria-label*='nmute']").forEach((b) => b.click());
+            }
+          }
+        }, 500);
+        setTimeout(() => clearInterval(tick), 120000);
       }
       document.addEventListener("DOMContentLoaded", () => post({ kind: "ready" }));
     })();
@@ -286,14 +320,6 @@ struct YouTubePlayerScreen: View {
             }
             .padding(.horizontal, 16)
 
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.shield")
-                Text("No ads · SponsorBlock skips sponsors, self-promotion and reminders")
-            }
-            .font(.caption)
-            .foregroundStyle(.green)
-            .padding(.horizontal, 16)
-
             ZStack {
                 PlayerWebView(webView: player.webView)
                 if player.adHidden {
@@ -323,9 +349,20 @@ struct YouTubePlayerScreen: View {
                     .transition(.opacity)
                 }
             }
+            .aspectRatio(16 / 9, contentMode: .fit)
             .background(Color.black)
             .animation(.default, value: player.toast)
-            .ignoresSafeArea(edges: .bottom)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(video.title).font(.headline)
+                Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
+                      systemImage: "checkmark.shield")
+                    .font(.caption).foregroundStyle(.green)
+            }
+            .padding(.horizontal, 16)
+            Spacer()
         }
         .padding(.top, 8)
         .background(Color(uiColor: .systemBackground))
