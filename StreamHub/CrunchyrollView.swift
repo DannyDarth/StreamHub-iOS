@@ -25,6 +25,15 @@ struct CrunchyrollView: View {
                 if browser.loading {
                     ProgressView().controlSize(.small)
                 }
+                if browser.onEpisode {
+                    Button {
+                        browser.openInCrunchyrollApp()
+                    } label: {
+                        Label("App", systemImage: "arrow.up.forward.app")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .accessibilityLabel("Watch in the Crunchyroll app")
+                }
                 Button {
                     if let url = browser.webView.url, CrunchyrollBrowser.allowed(url) { openURL(url) }
                 } label: {
@@ -47,6 +56,27 @@ struct CrunchyrollView: View {
 final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     static let shared = CrunchyrollBrowser()
     static let home = URL(string: "https://www.crunchyroll.com/")!
+    static let desktopScript = """
+    (() => {
+      if (!/(^|\\.)crunchyroll\\.com$/.test(location.hostname)) return;
+      const define = (object, name, value) => {
+        try { Object.defineProperty(object, name, { get: () => value, configurable: true }); } catch (e) {}
+      };
+      define(Navigator.prototype, "platform", "MacIntel");
+      define(Navigator.prototype, "maxTouchPoints", 0);
+      define(Navigator.prototype, "vendor", "Apple Computer, Inc.");
+      define(Navigator.prototype, "standalone", undefined);
+      try { delete window.ontouchstart; } catch (e) {}
+      const realMatchMedia = window.matchMedia.bind(window);
+      window.matchMedia = (query) => {
+        if (/pointer\\s*:\\s*coarse|hover\\s*:\\s*none/.test(query)) {
+          return Object.assign(realMatchMedia("not all"), { media: query });
+        }
+        return realMatchMedia(query);
+      };
+    })();
+    """
+
     /// Safari on a Mac: what Safari on iPhone sends for "Request Desktop Website".
     static let desktopSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
 
@@ -54,6 +84,8 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
     @Published private(set) var loading = false
+    /// On an episode page (crunchyroll.com/…/watch/…).
+    @Published private(set) var onEpisode = false
     private var observations: [NSKeyValueObservation] = []
 
     override init() {
@@ -65,6 +97,10 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
         // Crunchyroll's phone site won't play episodes ("get the app"): ask for the desktop site,
         // as Safari's "Request Desktop Website" does, where Crunchyroll's web player plays them
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
+        // Crunchyroll also tells phones apart by the platform and touch screen, not just the
+        // user agent: report what Safari on a Mac reports, in every Crunchyroll frame
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.desktopScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         if #available(iOS 16.4, *) {
             configuration.preferences.isElementFullscreenEnabled = true
         }
@@ -90,8 +126,23 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
             webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] view, _ in
                 DispatchQueue.main.async { self?.loading = view.isLoading }
             },
+            webView.observe(\.url, options: [.initial, .new]) { [weak self] view, _ in
+                let episode = view.url?.pathComponents.contains("watch") ?? false
+                DispatchQueue.main.async { self?.onEpisode = episode }
+            },
         ]
         webView.load(URLRequest(url: Self.home))
+    }
+
+    /// The episode in the Crunchyroll app (its link opens the app when it's installed), else the
+    /// app's App Store page.
+    func openInCrunchyrollApp() {
+        guard let url = webView.url, Self.allowed(url) else { return }
+        UIApplication.shared.open(url, options: [.universalLinksOnly: true]) { opened in
+            if !opened, let store = URL(string: "https://apps.apple.com/app/crunchyroll/id329913454") {
+                UIApplication.shared.open(store)
+            }
+        }
     }
 
     func goHome() {
