@@ -28,8 +28,8 @@ enum SponsorBlock {
     }
 }
 
-/// YouTube's own player (its embedded player, or the mobile page when a video can't be embedded),
-/// so YouTube's player gets the stream the way YouTube expects. Ads are taken out of YouTube's
+/// YouTube's own player (YouTube's mobile page, shown as just its player), so YouTube's player
+/// gets the stream the way YouTube expects. Ads are taken out of YouTube's
 /// answers before the player sees them (the same idea as uBlock Origin), ad servers are blocked,
 /// and if YouTube still starts an ad it's covered, muted and skipped: you never see or hear it.
 /// SponsorBlock skips in the page.
@@ -40,7 +40,6 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
     @Published var failed: String?
     let webView: WKWebView
     private let video: YTVideo
-    private var usedWatchPage = false
     private var toastTask: Task<Void, Never>?
     private var segmentsJSON = "[]"
 
@@ -69,7 +68,7 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         if let rules = await Self.blockList() {
             webView.configuration.userContentController.add(rules)
         }
-        load(embed: true)
+        load()
         let segments = video.live ? [] : await SponsorBlock.segments(video.id, categories: Self.skipCategories)
         sendSegments(segments)
     }
@@ -83,25 +82,10 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         }
     }
 
-    /// The page holding YouTube's embedded player. The embed refuses to play without knowing
-    /// which site embeds it (error 153), so the page is given youtube.com as its address.
-    private static let playerPage = URL(string: "https://www.youtube.com/streamhub-player")!
-
-    private func load(embed: Bool) {
-        let id = video.id
-        usedWatchPage = !embed
-        if embed {
-            let html = """
-            <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-            <style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style></head>
-            <body><iframe src="https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&fs=1&origin=https://www.youtube.com"
-            allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen
-            referrerpolicy="strict-origin-when-cross-origin"></iframe></body></html>
-            """
-            webView.loadHTMLString(html, baseURL: Self.playerPage)
-        } else {
-            webView.load(URLRequest(url: URL(string: "https://m.youtube.com/watch?v=\(id)")!))
-        }
+    /// YouTube's mobile page for the video, shown as just its player. (YouTube's embedded
+    /// player refuses apps: errors 152 and 153.)
+    private func load() {
+        webView.load(URLRequest(url: URL(string: "https://m.youtube.com/watch?v=\(video.id)")!))
     }
 
     func stop() {
@@ -110,7 +94,7 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         webView.loadHTMLString("", baseURL: nil)
     }
 
-    // The page's reports: an ad is being hidden, a SponsorBlock skip, or the embed refused the video.
+    // The page's reports: an ad is being hidden, or a SponsorBlock skip.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.securityOrigin.host.hasSuffix("youtube.com"),
               let body = message.body as? [String: Any], let kind = body["kind"] as? String else { return }
@@ -119,8 +103,6 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
             adHidden = (body["on"] as? Bool) ?? false
         case "skip":
             show("Skipped \(body["name"] as? String ?? "segment")")
-        case "embed-error":
-            if !usedWatchPage { load(embed: false) }
         case "ready":
             webView.evaluateJavaScript("window.__streamhubSegments = \(segmentsJSON);", completionHandler: nil)
         default:
@@ -153,8 +135,7 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         // the page stays on this video: other links (another video, the YouTube logo) are ignored
         let sameVideo = url.path.hasSuffix("/" + video.id) || url.query?.contains("v=\(video.id)") == true
         let consent = host.hasSuffix("google.com") || host.hasPrefix("consent.")
-        let playerPage = url.absoluteString == Self.playerPage.absoluteString
-        decisionHandler(ok && (sameVideo || consent || playerPage) ? .allow : .cancel)
+        decisionHandler(ok && (sameVideo || consent) ? .allow : .cancel)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -234,10 +215,40 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
             }
           }
         }
-        // the embedded player refused the video (embedding turned off): use the mobile page
-        const error = document.querySelector(".ytp-error, .ytp-embed-error");
-        if (error && /embed|unavailable|other websites|error|153|150|152/i.test(error.textContent || "")) post({ kind: "embed-error" });
       }, 250);
+      // 4. show only the player: YouTube's mobile page around it (top bar, comments, other
+      //    videos) is hidden, and the player fills StreamHub's video box
+      if (location.hostname === "m.youtube.com" && window.top === window) {
+        const css = `
+          html, body { background: #000 !important; overflow: hidden !important; }
+          ytm-mobile-topbar-renderer, .mobile-topbar-header, header, ytm-pivot-bar-renderer,
+          ytm-single-column-watch-next-results-renderer, ytm-item-section-renderer, .watch-below-the-player,
+          ytm-engagement-panel, .ytm-autonav-bar, ytm-companion-slot { display: none !important; }
+          #player-container-id, .player-container, #player-control-container {
+            position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important;
+            width: 100vw !important; height: 100vh !important; max-height: none !important;
+            z-index: 2147483000 !important; background: #000 !important; padding: 0 !important; margin: 0 !important;
+          }
+          #player, .html5-video-player, .html5-video-container, video {
+            width: 100% !important; height: 100% !important; max-height: none !important;
+          }
+          video { object-fit: contain !important; left: 0 !important; top: 0 !important; }
+        `;
+        const style = document.createElement("style");
+        style.textContent = css;
+        const add = () => { if (!style.isConnected) (document.head || document.documentElement).appendChild(style); };
+        add();
+        document.addEventListener("DOMContentLoaded", add);
+        // start playing once the player is there (the mobile page waits for a tap otherwise)
+        let tries = 0;
+        const start = setInterval(() => {
+          const video = document.querySelector("video");
+          if (video && video.readyState > 0) {
+            clearInterval(start);
+            video.play().catch(() => document.querySelector(".ytp-large-play-button, .ytmCuedOverlayPlayButton, button.icon-button")?.click());
+          } else if (++tries > 80) clearInterval(start);
+        }, 250);
+      }
       document.addEventListener("DOMContentLoaded", () => post({ kind: "ready" }));
     })();
     """#
