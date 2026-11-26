@@ -83,13 +83,25 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         }
     }
 
+    /// The page holding YouTube's embedded player. The embed refuses to play without knowing
+    /// which site embeds it (error 153), so the page is given youtube.com as its address.
+    private static let playerPage = URL(string: "https://www.youtube.com/streamhub-player")!
+
     private func load(embed: Bool) {
         let id = video.id
-        let url = embed
-            ? URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&fs=1")!
-            : URL(string: "https://m.youtube.com/watch?v=\(id)")!
         usedWatchPage = !embed
-        webView.load(URLRequest(url: url))
+        if embed {
+            let html = """
+            <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style></head>
+            <body><iframe src="https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&fs=1&origin=https://www.youtube.com"
+            allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen
+            referrerpolicy="strict-origin-when-cross-origin"></iframe></body></html>
+            """
+            webView.loadHTMLString(html, baseURL: Self.playerPage)
+        } else {
+            webView.load(URLRequest(url: URL(string: "https://m.youtube.com/watch?v=\(id)")!))
+        }
     }
 
     func stop() {
@@ -141,7 +153,8 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         // the page stays on this video: other links (another video, the YouTube logo) are ignored
         let sameVideo = url.path.hasSuffix("/" + video.id) || url.query?.contains("v=\(video.id)") == true
         let consent = host.hasSuffix("google.com") || host.hasPrefix("consent.")
-        decisionHandler(ok && (sameVideo || consent) ? .allow : .cancel)
+        let playerPage = url.absoluteString == Self.playerPage.absoluteString
+        decisionHandler(ok && (sameVideo || consent || playerPage) ? .allow : .cancel)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -223,7 +236,7 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         }
         // the embedded player refused the video (embedding turned off): use the mobile page
         const error = document.querySelector(".ytp-error, .ytp-embed-error");
-        if (error && /embed|unavailable|other websites|error/i.test(error.textContent || "")) post({ kind: "embed-error" });
+        if (error && /embed|unavailable|other websites|error|153|150|152/i.test(error.textContent || "")) post({ kind: "embed-error" });
       }, 250);
       document.addEventListener("DOMContentLoaded", () => post({ kind: "ready" }));
     })();
