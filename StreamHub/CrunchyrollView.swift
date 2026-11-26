@@ -47,6 +47,8 @@ struct CrunchyrollView: View {
 final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     static let shared = CrunchyrollBrowser()
     static let home = URL(string: "https://www.crunchyroll.com/")!
+    /// Safari on a Mac: what Safari on iPhone sends for "Request Desktop Website".
+    static let desktopSafari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
 
     let webView: WKWebView
     @Published private(set) var canGoBack = false
@@ -60,8 +62,9 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
         configuration.allowsInlineMediaPlayback = true
         configuration.allowsPictureInPictureMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        // Crunchyroll's site checks for Safari: look like Mobile Safari, not an embedded web view
-        configuration.applicationNameForUserAgent = "Version/17.0 Mobile/15E148 Safari/604.1"
+        // Crunchyroll's phone site won't play episodes ("get the app"): ask for the desktop site,
+        // as Safari's "Request Desktop Website" does, where Crunchyroll's web player plays them
+        configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         if #available(iOS 16.4, *) {
             configuration.preferences.isElementFullscreenEnabled = true
         }
@@ -70,6 +73,7 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
+        webView.customUserAgent = Self.desktopSafari
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
