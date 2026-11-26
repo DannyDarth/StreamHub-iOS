@@ -289,153 +289,106 @@ private final class WeakHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
-/// The video that's playing, shared by the whole app: full size, or small in the corner while
-/// you keep browsing (like YouTube's own app).
+/// The video that's playing. It plays right where it is in the list (in place of its
+/// thumbnail), one at a time; Full screen turns the phone sideways and fills the screen.
 @MainActor
 final class YouTubePlayerHost: ObservableObject {
     static let shared = YouTubePlayerHost()
     @Published private(set) var player: YouTubeWebPlayer?
     @Published private(set) var video: YTVideo?
-    @Published var expanded = true
+    @Published var fullScreen = false {
+        didSet { if fullScreen != oldValue { Self.rotate(landscape: fullScreen) } }
+    }
+
+    func isPlaying(_ video: YTVideo) -> Bool { self.video?.id == video.id && player != nil }
 
     func play(_ video: YTVideo) {
-        if self.video?.id == video.id {
-            expanded = true
-            return
-        }
+        guard self.video?.id != video.id else { return }
         player?.stop()
         let player = YouTubeWebPlayer(video: video)
         self.player = player
         self.video = video
-        expanded = true
         Task { await player.start() }
     }
 
-    func close() {
+    /// Stop the video (it was closed, or scrolled out of sight).
+    func close(_ video: YTVideo? = nil) {
+        if let video, video.id != self.video?.id { return }
+        fullScreen = false
         player?.stop()
         player = nil
-        video = nil
+        self.video = nil
+    }
+
+    private static func rotate(landscape: Bool) {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+        scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: landscape ? .landscapeRight : .portrait)) { _ in }
     }
 }
 
-/// Over the whole app: the player full size (landscape: the whole screen), or small in the
-/// bottom corner while you scroll. One web view moves between the two, so the video keeps playing.
-struct YouTubePlayerOverlay: View {
+/// A video playing in its place in the list, edge to edge, with a bar of its own below it.
+struct InlineYouTubePlayer: View {
     @ObservedObject var host = YouTubePlayerHost.shared
+    let video: YTVideo
     @Environment(\.openURL) private var openURL
-    @State private var drag: CGFloat = 0
 
     var body: some View {
-        if let player = host.player, let video = host.video {
-            GeometryReader { geo in
-                let landscape = geo.size.width > geo.size.height
-                let fullWidth = geo.size.width
-                let fullHeight = landscape ? geo.size.height : fullWidth * 9 / 16
-                let miniWidth = min(220, geo.size.width * 0.5)
-                let miniHeight = miniWidth * 9 / 16
-                let headerHeight: CGFloat = landscape ? 0 : 52
-                let frame: CGRect = host.expanded
-                    ? CGRect(x: 0, y: headerHeight, width: fullWidth, height: fullHeight)
-                    : CGRect(x: geo.size.width - miniWidth - 12, y: geo.size.height - miniHeight - 12,
-                             width: miniWidth, height: miniHeight)
-
-                ZStack(alignment: .topLeading) {
-                    if host.expanded {
-                        Color(uiColor: .systemBackground).ignoresSafeArea()
-                        if !landscape {
-                            header(video)
-                                .frame(height: headerHeight)
-                                .contentShape(Rectangle())
-                                .gesture(swipeDown)
-                            info(video)
-                                .padding(.top, headerHeight + fullHeight + 12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .gesture(swipeDown)
-                        }
-                    }
-
-                    PlayerStage(player: player, video: video, mini: !host.expanded)
-                        .frame(width: frame.width, height: frame.height)
-                        .clipShape(RoundedRectangle(cornerRadius: host.expanded ? 0 : 10))
-                        .shadow(radius: host.expanded ? 0 : 8)
-                        .offset(x: frame.minX, y: frame.minY + (host.expanded ? max(0, drag) : 0))
-
-                    if !host.expanded {
-                        miniControls
-                            .frame(width: frame.width, height: frame.height)
-                            .offset(x: frame.minX, y: frame.minY)
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            if let player = host.player, !host.fullScreen {
+                PlayerStage(player: player, video: video, mini: false)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+            } else {
+                Color.black.aspectRatio(16 / 9, contentMode: .fit)
+            }
+            HStack(spacing: 18) {
+                Label("No ads · SponsorBlock", systemImage: "checkmark.shield")
+                    .font(.caption).foregroundStyle(.green)
+                Spacer()
+                Button { host.fullScreen = true } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
-                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: host.expanded)
-                .statusBarHidden(host.expanded && landscape)
+                .accessibilityLabel("Full screen")
+                Button {
+                    if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
+                } label: {
+                    Image(systemName: "arrow.up.forward.app")
+                }
+                .accessibilityLabel("Open in the YouTube app")
+                Button { host.close() } label: {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Stop the video")
             }
+            .font(.body.weight(.semibold))
+            .padding(.horizontal, 16)
         }
+        // scrolled out of sight: the video stops
+        .onDisappear { if !host.fullScreen { host.close(video) } }
     }
+}
 
-    /// Swipe the player down to make it small.
-    private var swipeDown: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onChanged { drag = $0.translation.height }
-            .onEnded { value in
-                if value.translation.height > 80 { host.expanded = false }
-                drag = 0
-            }
-    }
+/// Full screen: the phone turns sideways and the video fills it. × (or turning back) leaves.
+struct FullScreenYouTubePlayer: View {
+    @ObservedObject var host = YouTubePlayerHost.shared
 
-    private func header(_ video: YTVideo) -> some View {
-        HStack {
-            Button { host.expanded = false } label: {
-                Image(systemName: "chevron.down").font(.title3.weight(.semibold))
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.ignoresSafeArea()
+            if let player = host.player, let video = host.video {
+                PlayerStage(player: player, video: video, mini: false)
+                    .ignoresSafeArea()
             }
-            .accessibilityLabel("Make the player small")
-            Spacer()
-            Button {
-                if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
-            } label: {
-                Label("YouTube", systemImage: "arrow.up.forward.app")
-            }
-            .font(.subheadline)
-            Button { host.close() } label: {
-                Image(systemName: "xmark").font(.title3.weight(.semibold))
-            }
-            .padding(.leading, 12)
-            .accessibilityLabel("Close the video")
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private func info(_ video: YTVideo) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(video.title).font(.headline)
-            Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
-                .font(.subheadline).foregroundStyle(.secondary)
-            Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
-                  systemImage: "checkmark.shield")
-                .font(.caption).foregroundStyle(.green)
-            Text("Swipe the video down or tap ⌄ to keep it playing small while you browse. Turn the phone sideways for full screen.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 16)
-    }
-
-    /// The small player: tap to make it big again, × to close.
-    private var miniControls: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { host.expanded = true }
-                .accessibilityLabel("Make the player big")
-                .accessibilityAddTraits(.isButton)
-            Button { host.close() } label: {
+            Button { host.fullScreen = false } label: {
                 Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
-                    .padding(6)
+                    .font(.body.weight(.bold))
+                    .padding(10)
                     .background(.ultraThinMaterial, in: Circle())
             }
-            .padding(4)
-            .accessibilityLabel("Close the video")
+            .padding(12)
+            .accessibilityLabel("Leave full screen")
         }
+        .statusBarHidden()
     }
 }
 

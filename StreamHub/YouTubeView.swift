@@ -17,6 +17,7 @@ struct YouTubeView: View {
     @State private var account: YTAccount?
     @State private var showSignIn = false
     @State private var reloadToken = 0
+    @ObservedObject private var host = YouTubePlayerHost.shared
 
     var body: some View {
         VStack(spacing: 8) {
@@ -92,6 +93,7 @@ struct YouTubeView: View {
             }
         }
         .task { await refreshAccount() }
+        .fullScreenCover(isPresented: $host.fullScreen) { FullScreenYouTubePlayer() }
         .sheet(isPresented: $showSignIn) {
             YouTubeSignInSheet {
                 showSignIn = false
@@ -302,8 +304,20 @@ private struct YouTubeVideoRow: View {
     let video: YTVideo
     let play: (YTVideo) -> Void
     var showChannel = true
+    @ObservedObject private var host = YouTubePlayerHost.shared
 
     var body: some View {
+        if host.isPlaying(video) {
+            VStack(alignment: .leading, spacing: 8) {
+                InlineYouTubePlayer(video: video)
+                details.padding(.horizontal, 16)
+            }
+        } else {
+            card.padding(.horizontal, 16)
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button { play(video) } label: {
                 ZStack(alignment: .bottomTrailing) {
@@ -326,7 +340,11 @@ private struct YouTubeVideoRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .buttonStyle(.plain)
+            details
+        }
+    }
 
+    private var details: some View {
             HStack(alignment: .top, spacing: 10) {
                 if showChannel {
                     channelLink { YouTubeAvatar(url: video.avatar, size: 36) }
@@ -344,8 +362,6 @@ private struct YouTubeVideoRow: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-        }
-        .padding(.horizontal, 16)
     }
 
     @ViewBuilder

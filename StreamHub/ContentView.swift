@@ -70,6 +70,10 @@ struct ContentView: View {
             .onChange(of: scenePhase) { phase in
                 if phase == .active { Task { await updates.check() } }
             }
+            // leaving the YouTube tab stops its video
+            .onChange(of: platform) { newValue in
+                if newValue != .youtube { YouTubePlayerHost.shared.close() }
+            }
             .sheet(isPresented: $showingFollowed) {
                 NavigationStack { FollowedView() }
             }
@@ -82,8 +86,6 @@ struct ContentView: View {
                 }
             }
         }
-        // a YouTube video keeps playing (big, or small in the corner) over every tab
-        .overlay { YouTubePlayerOverlay() }
     }
 }
 
