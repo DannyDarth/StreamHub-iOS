@@ -1,139 +1,12 @@
-import AVKit
 import SwiftUI
-
-/// Plays a YouTube video in iPhone's own player with no ads: StreamHub asks YouTube for the
-/// video's stream the way YouTube's iPhone app does and plays only that stream. YouTube's ads are
-/// separate videos, so they never play. If YouTube won't give the stream, the video doesn't play
-/// (it never falls back to YouTube's player with ads).
-enum YouTubeStream {
-    struct Resolved {
-        let url: URL
-        let title: String
-        let author: String
-        let live: Bool
-        let userAgent: String
-        var source = "iPhone app"
-    }
-
-    static let clientVersion = "20.10.4"
-    static let userAgent = "com.google.ios.youtube/\(clientVersion) (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
-
-    /// The streams to try, in order: as YouTube's website gives it to Safari, then as YouTube's
-    /// iPhone app gets it. Both are HLS streams without ads.
-    static func candidates(_ id: String) async throws -> [Resolved] {
-        guard id.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
-            throw YouTubeError.failed("Not a YouTube video.")
-        }
-        var found: [Resolved] = []
-        var reasons: [String] = []
-        do {
-            let web = try await YouTubeAPI.shared.player(id)
-            if web.status == "OK", let hls = web.hls, let url = checked(hls) {
-                found.append(Resolved(url: url, title: web.title, author: web.author, live: web.live,
-                                      userAgent: YouTubeAPI.safariUserAgent, source: "website"))
-            } else {
-                reasons.append(web.status == "OK" ? "website: no stream" : "website: \(web.reason ?? web.status)")
-            }
-        } catch {
-            reasons.append("website: \(error.localizedDescription)")
-        }
-        do {
-            found.append(try await resolveIOS(id))
-        } catch {
-            reasons.append("iPhone app: \(error.localizedDescription)")
-        }
-        if found.isEmpty { throw YouTubeError.failed(reasons.joined(separator: "\n")) }
-        return found
-    }
-
-    /// What the stream's server answers, step by step (shown when a stream won't play):
-    /// the master playlist, one quality's playlist and its first piece of video.
-    static func probe(_ resolved: Resolved) async -> String {
-        func get(_ url: URL, range: Bool = false) async -> (Int, String) {
-            var request = URLRequest(url: url, timeoutInterval: 10)
-            request.setValue(resolved.userAgent, forHTTPHeaderField: "User-Agent")
-            if range { request.setValue("bytes=0-2047", forHTTPHeaderField: "Range") }
-            guard let (data, response) = try? await URLSession.shared.data(for: request) else { return (-1, "") }
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            return (status, String(decoding: data.prefix(200_000), as: UTF8.self))
-        }
-        func firstURI(_ playlist: String, base: URL) -> URL? {
-            for line in playlist.split(whereSeparator: \.isNewline) where !line.hasPrefix("#") && !line.isEmpty {
-                return URL(string: String(line), relativeTo: base)?.absoluteURL
-            }
-            return nil
-        }
-        var steps: [String] = []
-        let (masterStatus, master) = await get(resolved.url)
-        steps.append("master \(masterStatus)")
-        if masterStatus == 200, let variant = firstURI(master, base: resolved.url) {
-            let (variantStatus, playlist) = await get(variant)
-            steps.append("quality \(variantStatus)")
-            if variantStatus == 200, let segment = firstURI(playlist, base: variant) {
-                let (segmentStatus, _) = await get(segment, range: true)
-                steps.append("video \(segmentStatus)")
-            }
-        } else if masterStatus == 200 {
-            steps.append("no qualities: " + String(master.prefix(80)))
-        }
-        return steps.joined(separator: " · ")
-    }
-
-    private static func checked(_ string: String) -> URL? {
-        guard let url = URL(string: string), url.scheme == "https", let host = url.host,
-              host.hasSuffix(".googlevideo.com") || host.hasSuffix(".youtube.com") else { return nil }
-        return url
-    }
-
-    private static func resolveIOS(_ id: String) async throws -> Resolved {
-        var request = URLRequest(url: URL(string: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")!,
-                                 timeoutInterval: 15)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("5", forHTTPHeaderField: "X-Youtube-Client-Name")
-        request.setValue(clientVersion, forHTTPHeaderField: "X-Youtube-Client-Version")
-        let body: [String: Any] = [
-            "context": ["client": [
-                "clientName": "IOS", "clientVersion": clientVersion, "deviceMake": "Apple",
-                "deviceModel": "iPhone16,2", "osName": "iPhone", "osVersion": "18.3.2.22D82",
-                "hl": "en", "gl": "US", "utcOffsetMinutes": 0,
-            ]],
-            "videoId": id,
-            "contentCheckOk": true,
-            "racyCheckOk": true,
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200, data.count < 8_000_000,
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw YouTubeError.failed("YouTube didn't answer.")
-        }
-        let playability = json["playabilityStatus"] as? [String: Any]
-        let status = playability?["status"] as? String ?? ""
-        guard status == "OK" else {
-            let reason = playability?["reason"] as? String ?? "YouTube won't play this video here."
-            throw YouTubeError.failed(reason)
-        }
-        let details = json["videoDetails"] as? [String: Any] ?? [:]
-        guard let streaming = json["streamingData"] as? [String: Any],
-              let manifest = streaming["hlsManifestUrl"] as? String, let url = checked(manifest) else {
-            throw YouTubeError.failed("YouTube didn't give an ad-free stream for this video.")
-        }
-        return Resolved(url: url, title: details["title"] as? String ?? "",
-                        author: details["author"] as? String ?? "",
-                        live: details["isLive"] as? Bool ?? false, userAgent: userAgent)
-    }
-}
+import WebKit
 
 /// SponsorBlock (sponsor.ajay.app): segments the community marked in a video.
 enum SponsorBlock {
-    struct Segment: Decodable, Hashable {
+    struct Segment: Codable, Hashable {
         let segment: [Double]
         let category: String
         let UUID: String
-        var start: Double { segment.first ?? 0 }
-        var end: Double { segment.count > 1 ? segment[1] : 0 }
     }
 
     static let names: [String: String] = [
@@ -150,89 +23,97 @@ enum SponsorBlock {
         guard let url = components.url,
               let result = try? await URLSession.shared.data(from: url),
               (result.1 as? HTTPURLResponse)?.statusCode == 200, result.0.count < 1_000_000 else { return [] }
-        return (try? JSONDecoder().decode([Segment].self, from: result.0))?.filter { $0.end > $0.start } ?? []
+        return (try? JSONDecoder().decode([Segment].self, from: result.0))?
+            .filter { $0.segment.count == 2 && $0.segment[1] > $0.segment[0] } ?? []
     }
 }
 
-/// The player: iPhone's own video player, with SponsorBlock skips.
+/// YouTube's own player (its embedded player, or the mobile page when a video can't be embedded),
+/// so YouTube's player gets the stream the way YouTube expects. Ads are taken out of YouTube's
+/// answers before the player sees them (the same idea as uBlock Origin), ad servers are blocked,
+/// and if YouTube still starts an ad it's covered, muted and skipped: you never see or hear it.
+/// SponsorBlock skips in the page.
 @MainActor
-final class YouTubePlayerModel: ObservableObject {
-    @Published var state: State = .loading
+final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, WKScriptMessageHandler {
+    @Published var adHidden = false
     @Published var toast: String?
-    let player = AVPlayer()
-    private var segments: [SponsorBlock.Segment] = []
-    private var skipped: Set<String> = []
-    private var observer: Any?
+    @Published var failed: String?
+    let webView: WKWebView
+    private let video: YTVideo
+    private var usedWatchPage = false
     private var toastTask: Task<Void, Never>?
-
-    enum State {
-        case loading, playing(YouTubeStream.Resolved), failed(String)
-    }
+    private var segmentsJSON = "[]"
 
     static let skipCategories = ["sponsor", "selfpromo", "interaction"]
 
-    func load(_ video: YTVideo) async {
-        do {
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-            async let segmentsTask = SponsorBlock.segments(video.id, categories: Self.skipCategories)
-            var problems: [String] = []
-            for resolved in try await YouTubeStream.candidates(video.id) {
-                let asset = AVURLAsset(url: resolved.url, options: ["AVURLAssetHTTPUserAgentKey": resolved.userAgent])
-                let item = AVPlayerItem(asset: asset)
-                player.replaceCurrentItem(with: item)
-                player.play()
-                if let problem = await ready(item) {
-                    let probe = await YouTubeStream.probe(resolved)
-                    problems.append("\(resolved.source): \(problem)\n\(probe)")
-                    continue
-                }
-                state = .playing(resolved)
-                segments = resolved.live ? [] : await segmentsTask
-                watchSegments()
-                return
-            }
-            player.replaceCurrentItem(with: nil)
-            state = .failed("The stream didn't play.\n" + problems.joined(separator: "\n"))
-        } catch {
-            state = .failed(error.localizedDescription)
+    init(video: YTVideo) {
+        self.video = video
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.allowsPictureInPictureMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.noAdsScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init()
+        configuration.userContentController.add(WeakHandler(self), name: "streamhub")
+        webView.navigationDelegate = self
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.isScrollEnabled = false
+        if #available(iOS 16.4, *) { webView.isInspectable = false }
+    }
+
+    func start() async {
+        if let rules = await Self.blockList() {
+            webView.configuration.userContentController.add(rules)
+        }
+        load(embed: true)
+        let segments = video.live ? [] : await SponsorBlock.segments(video.id, categories: Self.skipCategories)
+        sendSegments(segments)
+    }
+
+    private func sendSegments(_ segments: [SponsorBlock.Segment]) {
+        let items = segments.map { ["start": $0.segment[0], "end": $0.segment[1], "id": $0.UUID,
+                                    "name": SponsorBlock.names[$0.category] ?? $0.category] as [String: Any] }
+        if let data = try? JSONSerialization.data(withJSONObject: items), let json = String(data: data, encoding: .utf8) {
+            segmentsJSON = json
+            webView.evaluateJavaScript("window.__streamhubSegments = \(json);", completionHandler: nil)
         }
     }
 
-    /// Wait until the stream plays (nil) or fails (what went wrong, with the server's answer).
-    private func ready(_ item: AVPlayerItem) async -> String? {
-        for _ in 0..<200 {
-            switch item.status {
-            case .readyToPlay:
-                return nil
-            case .failed:
-                var parts = [item.error?.localizedDescription ?? "failed"]
-                if let underlying = (item.error as NSError?)?.userInfo[NSUnderlyingErrorKey] as? NSError {
-                    parts.append("\(underlying.domain) \(underlying.code)")
-                }
-                if let event = item.errorLog()?.events.last {
-                    parts.append("HTTP \(event.errorStatusCode) \(event.errorDomain) \(event.uri.flatMap { URL(string: $0)?.host } ?? "")")
-                }
-                return parts.joined(separator: " · ")
-            default:
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-        }
-        return "timed out"
+    private func load(embed: Bool) {
+        let id = video.id
+        let url = embed
+            ? URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=1&rel=0&modestbranding=1&iv_load_policy=3&fs=1")!
+            : URL(string: "https://m.youtube.com/watch?v=\(id)")!
+        usedWatchPage = !embed
+        webView.load(URLRequest(url: url))
     }
 
-    private func watchSegments() {
-        guard !segments.isEmpty else { return }
-        observer = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
-                                                  queue: .main) { [weak self] time in
-            Task { @MainActor in self?.check(time.seconds) }
-        }
+    func stop() {
+        webView.evaluateJavaScript("document.querySelectorAll('video').forEach(v => v.pause())", completionHandler: nil)
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
     }
 
-    private func check(_ now: Double) {
-        guard let segment = segments.first(where: { now >= $0.start && now < $0.end - 0.5 && !skipped.contains($0.UUID) }) else { return }
-        skipped.insert(segment.UUID)
-        player.seek(to: CMTime(seconds: segment.end, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-        show("Skipped \(SponsorBlock.names[segment.category] ?? segment.category)")
+    // The page's reports: an ad is being hidden, a SponsorBlock skip, or the embed refused the video.
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.securityOrigin.host.hasSuffix("youtube.com"),
+              let body = message.body as? [String: Any], let kind = body["kind"] as? String else { return }
+        switch kind {
+        case "ad":
+            adHidden = (body["on"] as? Bool) ?? false
+        case "skip":
+            show("Skipped \(body["name"] as? String ?? "segment")")
+        case "embed-error":
+            if !usedWatchPage { load(embed: false) }
+        case "ready":
+            webView.evaluateJavaScript("window.__streamhubSegments = \(segmentsJSON);", completionHandler: nil)
+        default:
+            break
+        }
     }
 
     private func show(_ message: String) {
@@ -244,25 +125,136 @@ final class YouTubePlayerModel: ObservableObject {
         }
     }
 
-    func stop() {
-        if let observer { player.removeTimeObserver(observer) }
-        observer = nil
-        player.pause()
-        player.replaceCurrentItem(with: nil)
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = action.request.url else { decisionHandler(.cancel); return }
+        if url.scheme == "about" { decisionHandler(.allow); return }
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else {
+            decisionHandler(.cancel); return
+        }
+        let ok = ["youtube.com", "google.com", "gstatic.com", "ytimg.com", "googlevideo.com", "youtube-nocookie.com"]
+            .contains { host == $0 || host.hasSuffix("." + $0) }
+        if action.targetFrame?.isMainFrame == false {
+            decisionHandler(ok ? .allow : .cancel)
+            return
+        }
+        // the page stays on this video: other links (another video, the YouTube logo) are ignored
+        let sameVideo = url.path.hasSuffix("/" + video.id) || url.query?.contains("v=\(video.id)") == true
+        let consent = host.hasSuffix("google.com") || host.hasPrefix("consent.")
+        decisionHandler(ok && (sameVideo || consent) ? .allow : .cancel)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        failed = error.localizedDescription
+    }
+
+    // MARK: - Ad blocking
+
+    /// Requests that only serve ads or ad tracking.
+    private static func blockList() async -> WKContentRuleList? {
+        // WebKit's rule patterns have no "or": one rule per pattern
+        let rules = #"""
+        [
+          {"trigger":{"url-filter":"^https?://([^/]*\\.)?doubleclick\\.net/"},"action":{"type":"block"}},
+          {"trigger":{"url-filter":"^https?://([^/]*\\.)?googleadservices\\.com/"},"action":{"type":"block"}},
+          {"trigger":{"url-filter":"^https?://([^/]*\\.)?googlesyndication\\.com/"},"action":{"type":"block"}},
+          {"trigger":{"url-filter":"^https?://([^/]*\\.)?googletagservices\\.com/"},"action":{"type":"block"}},
+          {"trigger":{"url-filter":"^https?://[^/]*youtube\\.com/pagead/"},"action":{"type":"block"}},
+          {"trigger":{"url-filter":"^https?://[^/]*youtube\\.com/api/stats/ads"},"action":{"type":"block"}},
+          {"trigger":{"url-filter":"^https?://[^/]*youtube\\.com/get_midroll_info"},"action":{"type":"block"}}
+        ]
+        """#
+        return try? await WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "streamhub-youtube-ads", encodedContentRuleList: rules)
+    }
+
+    /// Runs in YouTube's pages before YouTube's own scripts.
+    static let noAdsScript = #"""
+    (() => {
+      if (!/(^|\.)youtube(-nocookie)?\.com$/.test(location.hostname)) return;
+      const post = (data) => { try { window.webkit.messageHandlers.streamhub.postMessage(data); } catch (e) {} };
+      // 1. take the ads out of YouTube's answers before the player reads them
+      const AD_KEYS = ["adPlacements", "adSlots", "playerAds", "adBreakHeartbeatParams"];
+      const prune = (o, depth = 0) => {
+        if (!o || typeof o !== "object" || depth > 6) return o;
+        for (const k of AD_KEYS) if (k in o) { try { delete o[k]; } catch (e) {} }
+        if (Array.isArray(o)) { o.forEach((x) => prune(x, depth + 1)); return o; }
+        for (const k of ["playerResponse", "response", "data"]) if (o[k]) prune(o[k], depth + 1);
+        return o;
+      };
+      const parse = JSON.parse;
+      JSON.parse = function () { return prune(parse.apply(this, arguments)); };
+      const json = Response.prototype.json;
+      Response.prototype.json = function () { return json.apply(this, arguments).then((v) => prune(v)); };
+      for (const name of ["ytInitialPlayerResponse"]) {
+        let value;
+        try {
+          Object.defineProperty(window, name, { configurable: true, get: () => value, set: (v) => { value = prune(v); } });
+        } catch (e) {}
+      }
+      // 2. if YouTube still starts an ad: StreamHub covers the player, and the ad is muted and skipped
+      let inAd = false, wasMuted = false;
+      setInterval(() => {
+        const player = document.querySelector(".html5-video-player");
+        const video = document.querySelector("video");
+        const ad = !!(player && (player.classList.contains("ad-showing") || player.classList.contains("ad-interrupting")));
+        if (ad && video) {
+          if (!inAd) { inAd = true; wasMuted = video.muted; post({ kind: "ad", on: true }); }
+          video.muted = true;
+          try { video.playbackRate = 16; } catch (e) {}
+          if (isFinite(video.duration) && video.duration > 0) video.currentTime = video.duration;
+          document.querySelectorAll(".ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-skip-button-container button")
+            .forEach((b) => b.click());
+        } else if (inAd) {
+          inAd = false;
+          if (video) { video.muted = wasMuted; video.playbackRate = 1; }
+          post({ kind: "ad", on: false });
+        }
+        // 3. SponsorBlock: skip the marked segments
+        if (!ad && video && Array.isArray(window.__streamhubSegments)) {
+          window.__streamhubSkipped = window.__streamhubSkipped || {};
+          for (const s of window.__streamhubSegments) {
+            if (video.currentTime >= s.start && video.currentTime < s.end - 0.5 && !window.__streamhubSkipped[s.id]) {
+              window.__streamhubSkipped[s.id] = true;
+              video.currentTime = s.end;
+              post({ kind: "skip", name: s.name });
+            }
+          }
+        }
+        // the embedded player refused the video (embedding turned off): use the mobile page
+        const error = document.querySelector(".ytp-error, .ytp-embed-error");
+        if (error && /embed|unavailable|other websites|error/i.test(error.textContent || "")) post({ kind: "embed-error" });
+      }, 250);
+      document.addEventListener("DOMContentLoaded", () => post({ kind: "ready" }));
+    })();
+    """#
+}
+
+/// WebKit holds script message handlers strongly: this keeps the player from never being freed.
+private final class WeakHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(controller, didReceive: message)
     }
 }
 
 struct YouTubePlayerScreen: View {
     let video: YTVideo
-    @StateObject private var model = YouTubePlayerModel()
+    @StateObject private var player: YouTubeWebPlayer
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+
+    init(video: YTVideo) {
+        self.video = video
+        _player = StateObject(wrappedValue: YouTubeWebPlayer(video: video))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Button {
-                    model.stop()
+                    player.stop()
                     dismiss()
                 } label: {
                     Image(systemName: "chevron.down").font(.title3.weight(.semibold))
@@ -278,33 +270,38 @@ struct YouTubePlayerScreen: View {
             }
             .padding(.horizontal, 16)
 
-            ZStack(alignment: .bottom) {
-                Color.black
-                switch model.state {
-                case .loading:
-                    ProgressView().tint(.white)
-                case .playing:
-                    SystemVideoPlayer(player: model.player)
-                case .failed(let message):
-                    VStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle").font(.title)
-                        Text(message).multilineTextAlignment(.center).font(.subheadline)
-                        Text("No ads are ever played instead. You can open it in the YouTube app.")
-                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            ZStack {
+                PlayerWebView(webView: player.webView)
+                if player.adHidden {
+                    ZStack {
+                        Color.black
+                        VStack(spacing: 8) {
+                            ProgressView().tint(.white)
+                            Text("Skipping an ad…").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                    .padding()
                 }
-                if let toast = model.toast {
-                    Text(toast)
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding(.bottom, 44)
-                        .transition(.opacity)
+                if let message = player.failed {
+                    ZStack {
+                        Color.black
+                        Text(message).font(.subheadline).multilineTextAlignment(.center).padding()
+                    }
+                }
+                if let toast = player.toast {
+                    VStack {
+                        Spacer()
+                        Text(toast)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(.bottom, 44)
+                    }
+                    .transition(.opacity)
                 }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
-            .animation(.default, value: model.toast)
+            .background(Color.black)
+            .animation(.default, value: player.toast)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(video.title).font(.headline)
@@ -319,24 +316,13 @@ struct YouTubePlayerScreen: View {
         }
         .padding(.top, 8)
         .background(Color(uiColor: .systemBackground))
-        .task { await model.load(video) }
-        .onDisappear { model.stop() }
+        .task { await player.start() }
+        .onDisappear { player.stop() }
     }
 }
 
-/// iPhone's own player (AVPlayerViewController): full screen, rotation and its controls.
-private struct SystemVideoPlayer: UIViewControllerRepresentable {
-    let player: AVPlayer
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = player
-        controller.entersFullScreenWhenPlaybackBegins = false
-        controller.exitsFullScreenWhenPlaybackEnds = true
-        return controller
-    }
-
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        if controller.player !== player { controller.player = player }
-    }
+private struct PlayerWebView: UIViewRepresentable {
+    let webView: WKWebView
+    func makeUIView(context: Context) -> WKWebView { webView }
+    func updateUIView(_ view: WKWebView, context: Context) {}
 }
