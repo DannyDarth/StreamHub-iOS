@@ -82,6 +82,8 @@ struct ContentView: View {
                 }
             }
         }
+        // a YouTube video keeps playing (big, or small in the corner) over every tab
+        .overlay { YouTubePlayerOverlay() }
     }
 }
 

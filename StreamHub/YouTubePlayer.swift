@@ -289,90 +289,223 @@ private final class WeakHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
-struct YouTubePlayerScreen: View {
-    let video: YTVideo
-    @StateObject private var player: YouTubeWebPlayer
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
+/// The video that's playing, shared by the whole app: full size, or small in the corner while
+/// you keep browsing (like YouTube's own app).
+@MainActor
+final class YouTubePlayerHost: ObservableObject {
+    static let shared = YouTubePlayerHost()
+    @Published private(set) var player: YouTubeWebPlayer?
+    @Published private(set) var video: YTVideo?
+    @Published var expanded = true
 
-    init(video: YTVideo) {
+    func play(_ video: YTVideo) {
+        if self.video?.id == video.id {
+            expanded = true
+            return
+        }
+        player?.stop()
+        let player = YouTubeWebPlayer(video: video)
+        self.player = player
         self.video = video
-        _player = StateObject(wrappedValue: YouTubeWebPlayer(video: video))
+        expanded = true
+        Task { await player.start() }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Button {
-                    player.stop()
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.down").font(.title3.weight(.semibold))
-                }
-                .accessibilityLabel("Close")
-                Spacer()
-                Button {
-                    if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
-                } label: {
-                    Label("YouTube", systemImage: "arrow.up.forward.app")
-                }
-                .font(.subheadline)
-            }
-            .padding(.horizontal, 16)
-
-            ZStack {
-                PlayerWebView(webView: player.webView)
-                if player.adHidden {
-                    ZStack {
-                        Color.black
-                        VStack(spacing: 8) {
-                            ProgressView().tint(.white)
-                            Text("Skipping an ad…").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if let message = player.failed {
-                    ZStack {
-                        Color.black
-                        Text(message).font(.subheadline).multilineTextAlignment(.center).padding()
-                    }
-                }
-                if let toast = player.toast {
-                    VStack {
-                        Text(toast)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .padding(.top, 12)
-                        Spacer()
-                    }
-                    .transition(.opacity)
-                }
-            }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .background(Color.black)
-            .animation(.default, value: player.toast)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(video.title).font(.headline)
-                Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.subheadline).foregroundStyle(.secondary)
-                Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
-                      systemImage: "checkmark.shield")
-                    .font(.caption).foregroundStyle(.green)
-            }
-            .padding(.horizontal, 16)
-            Spacer()
-        }
-        .padding(.top, 8)
-        .background(Color(uiColor: .systemBackground))
-        .task { await player.start() }
-        .onDisappear { player.stop() }
+    func close() {
+        player?.stop()
+        player = nil
+        video = nil
     }
 }
 
+/// Over the whole app: the player full size (landscape: the whole screen), or small in the
+/// bottom corner while you scroll. One web view moves between the two, so the video keeps playing.
+struct YouTubePlayerOverlay: View {
+    @ObservedObject var host = YouTubePlayerHost.shared
+    @Environment(\.openURL) private var openURL
+    @State private var drag: CGFloat = 0
+
+    var body: some View {
+        if let player = host.player, let video = host.video {
+            GeometryReader { geo in
+                let landscape = geo.size.width > geo.size.height
+                let fullWidth = geo.size.width
+                let fullHeight = landscape ? geo.size.height : fullWidth * 9 / 16
+                let miniWidth = min(220, geo.size.width * 0.5)
+                let miniHeight = miniWidth * 9 / 16
+                let headerHeight: CGFloat = landscape ? 0 : 52
+                let frame: CGRect = host.expanded
+                    ? CGRect(x: 0, y: headerHeight, width: fullWidth, height: fullHeight)
+                    : CGRect(x: geo.size.width - miniWidth - 12, y: geo.size.height - miniHeight - 12,
+                             width: miniWidth, height: miniHeight)
+
+                ZStack(alignment: .topLeading) {
+                    if host.expanded {
+                        Color(uiColor: .systemBackground).ignoresSafeArea()
+                        if !landscape {
+                            header(video)
+                                .frame(height: headerHeight)
+                                .contentShape(Rectangle())
+                                .gesture(swipeDown)
+                            info(video)
+                                .padding(.top, headerHeight + fullHeight + 12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .gesture(swipeDown)
+                        }
+                    }
+
+                    PlayerStage(player: player, video: video, mini: !host.expanded)
+                        .frame(width: frame.width, height: frame.height)
+                        .clipShape(RoundedRectangle(cornerRadius: host.expanded ? 0 : 10))
+                        .shadow(radius: host.expanded ? 0 : 8)
+                        .offset(x: frame.minX, y: frame.minY + (host.expanded ? max(0, drag) : 0))
+
+                    if !host.expanded {
+                        miniControls
+                            .frame(width: frame.width, height: frame.height)
+                            .offset(x: frame.minX, y: frame.minY)
+                    }
+                }
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: host.expanded)
+                .statusBarHidden(host.expanded && landscape)
+            }
+        }
+    }
+
+    /// Swipe the player down to make it small.
+    private var swipeDown: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { drag = $0.translation.height }
+            .onEnded { value in
+                if value.translation.height > 80 { host.expanded = false }
+                drag = 0
+            }
+    }
+
+    private func header(_ video: YTVideo) -> some View {
+        HStack {
+            Button { host.expanded = false } label: {
+                Image(systemName: "chevron.down").font(.title3.weight(.semibold))
+            }
+            .accessibilityLabel("Make the player small")
+            Spacer()
+            Button {
+                if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
+            } label: {
+                Label("YouTube", systemImage: "arrow.up.forward.app")
+            }
+            .font(.subheadline)
+            Button { host.close() } label: {
+                Image(systemName: "xmark").font(.title3.weight(.semibold))
+            }
+            .padding(.leading, 12)
+            .accessibilityLabel("Close the video")
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func info(_ video: YTVideo) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(video.title).font(.headline)
+            Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.subheadline).foregroundStyle(.secondary)
+            Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
+                  systemImage: "checkmark.shield")
+                .font(.caption).foregroundStyle(.green)
+            Text("Swipe the video down or tap ⌄ to keep it playing small while you browse. Turn the phone sideways for full screen.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    /// The small player: tap to make it big again, × to close.
+    private var miniControls: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { host.expanded = true }
+                .accessibilityLabel("Make the player big")
+                .accessibilityAddTraits(.isButton)
+            Button { host.close() } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .padding(4)
+            .accessibilityLabel("Close the video")
+        }
+    }
+}
+
+/// The video itself and what StreamHub shows over it (ad being skipped, SponsorBlock skips).
+private struct PlayerStage: View {
+    @ObservedObject var player: YouTubeWebPlayer
+    let video: YTVideo
+    let mini: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black
+            PlayerWebView(webView: player.webView)
+                .allowsHitTesting(!mini)
+            if player.adHidden {
+                ZStack {
+                    Color.black
+                    VStack(spacing: 8) {
+                        ProgressView().tint(.white)
+                        if !mini { Text("Skipping an ad…").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }
+            if let message = player.failed {
+                ZStack {
+                    Color.black
+                    Text(message).font(mini ? .caption2 : .subheadline).multilineTextAlignment(.center).padding()
+                }
+            }
+            if let toast = player.toast, !mini {
+                VStack {
+                    Text(toast)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.top, 12)
+                    Spacer()
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.default, value: player.toast)
+    }
+}
+
+/// Holds the player's web view; a new video's web view replaces the old one in place.
 private struct PlayerWebView: UIViewRepresentable {
     let webView: WKWebView
-    func makeUIView(context: Context) -> WKWebView { webView }
-    func updateUIView(_ view: WKWebView, context: Context) {}
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .black
+        attach(to: container)
+        return container
+    }
+
+    func updateUIView(_ container: UIView, context: Context) {
+        if webView.superview !== container { attach(to: container) }
+    }
+
+    private func attach(to container: UIView) {
+        container.subviews.forEach { $0.removeFromSuperview() }
+        webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+    }
 }

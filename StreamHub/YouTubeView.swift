@@ -16,7 +16,6 @@ struct YouTubeView: View {
     @State private var signedIn = false
     @State private var account: YTAccount?
     @State private var showSignIn = false
-    @State private var playing: YTVideo?
     @State private var reloadToken = 0
 
     var body: some View {
@@ -42,7 +41,7 @@ struct YouTubeView: View {
             .padding(.horizontal, 16)
 
             if searching {
-                YouTubeSearchResults(query: query, play: { playing = $0 })
+                YouTubeSearchResults(query: query, play: { YouTubePlayerHost.shared.play($0) })
                     .id(query)
             } else {
                 HStack {
@@ -79,10 +78,10 @@ struct YouTubeView: View {
 
                 switch section {
                 case .home:
-                    YouTubeFeedList(kind: .home, play: { playing = $0 }).id("home-\(reloadToken)")
+                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }).id("home-\(reloadToken)")
                 case .subscriptions:
                     if signedIn {
-                        YouTubeFeedList(kind: .subscriptions, play: { playing = $0 }).id("subs-\(reloadToken)")
+                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }).id("subs-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see new videos from your subscriptions.")
@@ -101,9 +100,6 @@ struct YouTubeView: View {
                     reloadToken += 1
                 }
             }
-        }
-        .fullScreenCover(item: $playing) { video in
-            YouTubePlayerScreen(video: video)
         }
     }
 
