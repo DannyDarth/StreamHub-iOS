@@ -23,7 +23,7 @@ struct SettingsView: View {
     private func signOut() {
         SignInVault.clear()
         let store = WKWebsiteDataStore.default()
-        let domains = ["twitch.tv", "kick.com", "crunchyroll.com"]
+        let domains = ["twitch.tv", "kick.com", "crunchyroll.com", "youtube.com", "google.com"]
         store.fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
             let matching = records.filter { record in
                 domains.contains { record.displayName == $0 || record.displayName.hasSuffix("." + $0) }
@@ -37,10 +37,10 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Button("Sign out of Twitch, Kick and Crunchyroll", role: .destructive) {
+                Button("Sign out of Twitch, Kick, YouTube and Crunchyroll", role: .destructive) {
                     signOutConfirm = true
                 }
-                .confirmationDialog("Sign out of Twitch, Kick and Crunchyroll?", isPresented: $signOutConfirm,
+                .confirmationDialog("Sign out of Twitch, Kick, YouTube and Crunchyroll?", isPresented: $signOutConfirm,
                                     titleVisibility: .visible) {
                     Button("Sign out", role: .destructive) { signOut() }
                 }

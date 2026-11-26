@@ -4,6 +4,7 @@ import SwiftUI
 private enum StreamPlatform: String, CaseIterable, Identifiable {
     case twitch = "Twitch"
     case kick = "Kick"
+    case youtube = "YouTube"
     case crunchyroll = "Crunchyroll"
     var id: String { rawValue }
 }
@@ -57,6 +58,8 @@ struct ContentView: View {
                     KickDirectoryView()
                 case .twitch:
                     TwitchDirectoryView()
+                case .youtube:
+                    YouTubeView()
                 case .crunchyroll:
                     CrunchyrollView()
                 }
