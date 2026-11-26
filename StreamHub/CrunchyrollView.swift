@@ -67,6 +67,38 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
       define(Navigator.prototype, "vendor", "Apple Computer, Inc.");
       define(Navigator.prototype, "standalone", undefined);
       try { delete window.ontouchstart; } catch (e) {}
+      // the page at the phone's width: Crunchyroll leaves out its phone viewport for Macs
+      const fit = () => {
+        if (!document.head) return false;
+        let meta = document.querySelector('meta[name="viewport"]');
+        if (!meta) {
+          meta = document.createElement("meta");
+          meta.name = "viewport";
+          document.head.appendChild(meta);
+        }
+        meta.content = "width=device-width, initial-scale=1, viewport-fit=cover";
+        return true;
+      };
+      if (!fit()) document.addEventListener("DOMContentLoaded", fit);
+      new MutationObserver(() => {
+        const meta = document.querySelector('meta[name="viewport"]');
+        if (meta && !/device-width/.test(meta.content)) fit();
+      }).observe(document.documentElement, { childList: true, subtree: true });
+      // full screen: the player asks for full screen on its box, which iPhone can't do in an
+      // app; play the video in iPhone's own full-screen player instead
+      if (window.top === window || /crunchyroll\\.com$/.test(location.hostname)) {
+        const enter = function () {
+          const video = this instanceof HTMLVideoElement ? this : (this.querySelector && this.querySelector("video")) || document.querySelector("video");
+          if (video && video.webkitEnterFullscreen) {
+            try { video.webkitEnterFullscreen(); return Promise.resolve(); } catch (e) {}
+          }
+          return Promise.reject(new TypeError("Full screen isn't available"));
+        };
+        Element.prototype.requestFullscreen = enter;
+        Element.prototype.webkitRequestFullscreen = enter;
+        define(Document.prototype, "fullscreenEnabled", true);
+        define(Document.prototype, "webkitFullscreenEnabled", true);
+      }
       const realMatchMedia = window.matchMedia.bind(window);
       window.matchMedia = (query) => {
         if (/pointer\\s*:\\s*coarse|hover\\s*:\\s*none/.test(query)) {
@@ -101,9 +133,6 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
         configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.desktopScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        if #available(iOS 16.4, *) {
-            configuration.preferences.isElementFullscreenEnabled = true
-        }
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self
