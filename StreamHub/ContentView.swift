@@ -4,6 +4,7 @@ import SwiftUI
 private enum StreamPlatform: String, CaseIterable, Identifiable {
     case twitch = "Twitch"
     case kick = "Kick"
+    case crunchyroll = "Crunchyroll"
     var id: String { rawValue }
 }
 
@@ -47,10 +48,13 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .padding()
 
-                if platform == .kick {
+                switch platform {
+                case .kick:
                     KickDirectoryView()
-                } else {
+                case .twitch:
                     TwitchDirectoryView()
+                case .crunchyroll:
+                    CrunchyrollView()
                 }
             }
             .navigationTitle("")
