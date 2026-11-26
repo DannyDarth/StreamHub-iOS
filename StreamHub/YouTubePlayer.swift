@@ -12,35 +12,38 @@ enum YouTubeStream {
         let author: String
         let live: Bool
         let userAgent: String
+        var source = "iPhone app"
     }
 
     static let clientVersion = "20.10.4"
     static let userAgent = "com.google.ios.youtube/\(clientVersion) (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
 
-    /// The stream to play: first as YouTube's website gives it to Safari, then as YouTube's
+    /// The streams to try, in order: as YouTube's website gives it to Safari, then as YouTube's
     /// iPhone app gets it. Both are HLS streams without ads.
-    static func resolve(_ id: String) async throws -> Resolved {
+    static func candidates(_ id: String) async throws -> [Resolved] {
         guard id.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
             throw YouTubeError.failed("Not a YouTube video.")
         }
+        var found: [Resolved] = []
         var reasons: [String] = []
         do {
             let web = try await YouTubeAPI.shared.player(id)
             if web.status == "OK", let hls = web.hls, let url = checked(hls) {
-                return Resolved(url: url, title: web.title, author: web.author, live: web.live,
-                                userAgent: YouTubeAPI.safariUserAgent)
+                found.append(Resolved(url: url, title: web.title, author: web.author, live: web.live,
+                                      userAgent: YouTubeAPI.safariUserAgent, source: "website"))
+            } else {
+                reasons.append(web.status == "OK" ? "website: no stream" : "website: \(web.reason ?? web.status)")
             }
-            if web.status != "OK" { reasons.append(web.reason ?? "YouTube won't play this video here.") }
         } catch {
-            reasons.append(error.localizedDescription)
+            reasons.append("website: \(error.localizedDescription)")
         }
         do {
-            return try await resolveIOS(id)
+            found.append(try await resolveIOS(id))
         } catch {
-            reasons.append(error.localizedDescription)
+            reasons.append("iPhone app: \(error.localizedDescription)")
         }
-        throw YouTubeError.failed(reasons.first { !$0.contains("ad-free stream") } ?? reasons.last
-            ?? "YouTube didn't give an ad-free stream for this video.")
+        if found.isEmpty { throw YouTubeError.failed(reasons.joined(separator: "\n")) }
+        return found
     }
 
     private static func checked(_ string: String) -> URL? {
@@ -139,16 +142,48 @@ final class YouTubePlayerModel: ObservableObject {
         do {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             async let segmentsTask = SponsorBlock.segments(video.id, categories: Self.skipCategories)
-            let resolved = try await YouTubeStream.resolve(video.id)
-            let asset = AVURLAsset(url: resolved.url, options: ["AVURLAssetHTTPUserAgentKey": resolved.userAgent])
-            player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
-            player.play()
-            state = .playing(resolved)
-            segments = resolved.live ? [] : await segmentsTask
-            watchSegments()
+            var problems: [String] = []
+            for resolved in try await YouTubeStream.candidates(video.id) {
+                let asset = AVURLAsset(url: resolved.url, options: ["AVURLAssetHTTPUserAgentKey": resolved.userAgent])
+                let item = AVPlayerItem(asset: asset)
+                player.replaceCurrentItem(with: item)
+                player.play()
+                if let problem = await ready(item) {
+                    problems.append("\(resolved.source): \(problem)")
+                    continue
+                }
+                state = .playing(resolved)
+                segments = resolved.live ? [] : await segmentsTask
+                watchSegments()
+                return
+            }
+            player.replaceCurrentItem(with: nil)
+            state = .failed("The stream didn't play.\n" + problems.joined(separator: "\n"))
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Wait until the stream plays (nil) or fails (what went wrong, with the server's answer).
+    private func ready(_ item: AVPlayerItem) async -> String? {
+        for _ in 0..<200 {
+            switch item.status {
+            case .readyToPlay:
+                return nil
+            case .failed:
+                var parts = [item.error?.localizedDescription ?? "failed"]
+                if let underlying = (item.error as NSError?)?.userInfo[NSUnderlyingErrorKey] as? NSError {
+                    parts.append("\(underlying.domain) \(underlying.code)")
+                }
+                if let event = item.errorLog()?.events.last {
+                    parts.append("HTTP \(event.errorStatusCode) \(event.errorDomain) \(event.uri.flatMap { URL(string: $0)?.host } ?? "")")
+                }
+                return parts.joined(separator: " · ")
+            default:
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        return "timed out"
     }
 
     private func watchSegments() {
