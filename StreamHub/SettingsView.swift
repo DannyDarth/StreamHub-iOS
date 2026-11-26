@@ -40,7 +40,7 @@ struct SettingsView: View {
             } header: {
                 Text("Updates")
             } footer: {
-                Text("StreamHub checks GitHub for a new version and shows a banner with a download link. Install the new IPA with AltStore or Sideloadly; your settings and sign-ins are kept.")
+                Text("StreamHub checks GitHub for a new version and shows a banner with a download link. Install the new IPA with your signing service (Signulous, AltStore, Sideloadly…). Use the same bundle ID so it installs over this one and keeps your settings and sign-ins.")
             }
         }
         .navigationTitle("Settings")

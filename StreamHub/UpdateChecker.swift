@@ -8,6 +8,8 @@ final class UpdateChecker: ObservableObject {
     struct Release: Equatable {
         let version: String
         let page: URL
+        /// The IPA itself, for signing services that take a link (Signulous and others).
+        let ipa: URL?
     }
 
     static let shared = UpdateChecker()
@@ -71,10 +73,15 @@ final class UpdateChecker: ObservableObject {
     }
 
     private struct GitHubRelease: Decodable {
+        struct Asset: Decodable {
+            let name: String
+            let browser_download_url: String
+        }
         let tag_name: String
         let html_url: String
         let draft: Bool?
         let prerelease: Bool?
+        let assets: [Asset]?
     }
 
     private enum CheckError: LocalizedError {
@@ -103,7 +110,10 @@ final class UpdateChecker: ObservableObject {
         guard !version.isEmpty, version.allSatisfy({ $0.isNumber || $0 == "." }) else {
             throw CheckError.badResponse
         }
-        return Release(version: version, page: page)
+        let ipa = release.assets?
+            .first { $0.name.hasSuffix(".ipa") && $0.browser_download_url.hasPrefix(releasesPrefix + "download/") }
+            .flatMap { URL(string: $0.browser_download_url) }
+        return Release(version: version, page: page, ipa: ipa)
     }
 
     /// "1.10.0" is newer than "1.9.2".
@@ -123,6 +133,7 @@ final class UpdateChecker: ObservableObject {
 struct UpdateBanner: View {
     @ObservedObject var checker: UpdateChecker
     @Environment(\.openURL) private var openURL
+    @State private var copied = false
 
     var body: some View {
         if let release = checker.available {
@@ -132,14 +143,38 @@ struct UpdateBanner: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("StreamHub iOS \(release.version) is available")
                         .font(.subheadline.weight(.semibold))
-                    Text("Download the IPA and install it with AltStore or Sideloadly.")
+                    Text(copied ? "IPA link copied: paste it into your signing service." : "Install the new IPA with your signing service.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
-                Button("Download") { openURL(release.page) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                Menu {
+                    Button {
+                        openURL(release.page)
+                    } label: {
+                        Label("Open the release page", systemImage: "safari")
+                    }
+                    if let ipa = release.ipa {
+                        Button {
+                            UIPasteboard.general.url = ipa
+                            copied = true
+                        } label: {
+                            Label("Copy the IPA link", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            openURL(ipa)
+                        } label: {
+                            Label("Download the IPA", systemImage: "arrow.down.circle")
+                        }
+                    }
+                } label: {
+                    Text("Get it")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.accentColor, in: Capsule())
+                        .foregroundStyle(.white)
+                }
                 Button {
                     checker.dismiss()
                 } label: {
