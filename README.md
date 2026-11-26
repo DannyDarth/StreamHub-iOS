@@ -1,16 +1,19 @@
 # StreamHub iOS
 
-Native SwiftUI iPhone app for watching Twitch and Kick streams, ad-free on Twitch. The Windows app is [DannyDarth/StreamHub](https://github.com/DannyDarth/StreamHub).
+Native SwiftUI iPhone app for watching Twitch and Kick streams (ad-free on Twitch) and Crunchyroll. The Windows app is [DannyDarth/StreamHub](https://github.com/DannyDarth/StreamHub).
 
 ## Features
 
 - **Twitch:** games, followed channels and search, with ad-free playback (below)
 - **Kick:** sign in to see your followed channels, games and streams
 - **Chat** for Twitch and Kick
+- **Crunchyroll:** crunchyroll.com in its own tab with your sign-in and Crunchyroll's player (full screen in iPhone's player); **App** opens an episode in the Crunchyroll app
+- **Sign-ins kept across new versions:** Twitch, Kick and Crunchyroll sign-ins are saved in the Keychain (this device only) and put back after a reinstall; Settings → Sign-ins signs out of everything
+- **Update check:** a banner when a new version is out, with the IPA's link or download for your signing service
 
 ## Install
 
-Download **StreamHub-iOS-…-unsigned.ipa** from the [latest release](https://github.com/DannyDarth/StreamHub-iOS/releases/latest), then sign and install it on your iPhone from Windows with a sideloading tool such as AltStore/AltServer or Sideloadly. An unsigned IPA can't launch without signing.
+Download **StreamHub-iOS-…-unsigned.ipa** from the [latest release](https://github.com/DannyDarth/StreamHub-iOS/releases/latest), then sign and install it with a signing service or sideloading tool (Signulous, AltStore/AltServer, Sideloadly…). Keep the same bundle ID when you update, so the new version replaces the old one. An unsigned IPA can't launch without signing.
 
 ## Builds and releases
 
