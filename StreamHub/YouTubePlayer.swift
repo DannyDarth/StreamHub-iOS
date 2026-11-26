@@ -60,7 +60,6 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         webView.navigationDelegate = self
         webView.isOpaque = false
         webView.backgroundColor = .black
-        webView.scrollView.isScrollEnabled = false
         if #available(iOS 16.4, *) { webView.isInspectable = false }
     }
 
@@ -135,11 +134,26 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         // the page stays on this video: other links (another video, the YouTube logo) are ignored
         let sameVideo = url.path.hasSuffix("/" + video.id) || url.query?.contains("v=\(video.id)") == true
         let consent = host.hasSuffix("google.com") || host.hasPrefix("consent.")
-        decisionHandler(ok && (sameVideo || consent) ? .allow : .cancel)
+        let allow = ok && (sameVideo || consent)
+        if !allow && !loadedOnce {
+            // the first page never showed: say which address was refused instead of a black screen
+            failed = "YouTube sent StreamHub to a page it doesn't open: \(host)\(url.path)"
+        }
+        decisionHandler(allow ? .allow : .cancel)
+    }
+
+    private var loadedOnce = false
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loadedOnce = true
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        failed = error.localizedDescription
+        if (error as NSError).code != NSURLErrorCancelled { failed = error.localizedDescription }
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code != NSURLErrorCancelled, !loadedOnce { failed = error.localizedDescription }
     }
 
     // MARK: - Ad blocking
@@ -216,30 +230,8 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           }
         }
       }, 250);
-      // 4. show only the player: YouTube's mobile page around it (top bar, comments, other
-      //    videos) is hidden, and the player fills StreamHub's video box
+      // 4. start playing once the player is there (the mobile page waits for a tap otherwise)
       if (location.hostname === "m.youtube.com" && window.top === window) {
-        const css = `
-          html, body { background: #000 !important; overflow: hidden !important; }
-          ytm-mobile-topbar-renderer, .mobile-topbar-header, header, ytm-pivot-bar-renderer,
-          ytm-single-column-watch-next-results-renderer, ytm-item-section-renderer, .watch-below-the-player,
-          ytm-engagement-panel, .ytm-autonav-bar, ytm-companion-slot { display: none !important; }
-          #player-container-id, .player-container, #player-control-container {
-            position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important;
-            width: 100vw !important; height: 100vh !important; max-height: none !important;
-            z-index: 2147483000 !important; background: #000 !important; padding: 0 !important; margin: 0 !important;
-          }
-          #player, .html5-video-player, .html5-video-container, video {
-            width: 100% !important; height: 100% !important; max-height: none !important;
-          }
-          video { object-fit: contain !important; left: 0 !important; top: 0 !important; }
-        `;
-        const style = document.createElement("style");
-        style.textContent = css;
-        const add = () => { if (!style.isConnected) (document.head || document.documentElement).appendChild(style); };
-        add();
-        document.addEventListener("DOMContentLoaded", add);
-        // start playing once the player is there (the mobile page waits for a tap otherwise)
         let tries = 0;
         const start = setInterval(() => {
           const video = document.querySelector("video");
@@ -294,6 +286,14 @@ struct YouTubePlayerScreen: View {
             }
             .padding(.horizontal, 16)
 
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.shield")
+                Text("No ads · SponsorBlock skips sponsors, self-promotion and reminders")
+            }
+            .font(.caption)
+            .foregroundStyle(.green)
+            .padding(.horizontal, 16)
+
             ZStack {
                 PlayerWebView(webView: player.webView)
                 if player.adHidden {
@@ -313,30 +313,19 @@ struct YouTubePlayerScreen: View {
                 }
                 if let toast = player.toast {
                     VStack {
-                        Spacer()
                         Text(toast)
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 12).padding(.vertical, 6)
                             .background(.ultraThinMaterial, in: Capsule())
-                            .padding(.bottom, 44)
+                            .padding(.top, 12)
+                        Spacer()
                     }
                     .transition(.opacity)
                 }
             }
-            .aspectRatio(16 / 9, contentMode: .fit)
             .background(Color.black)
             .animation(.default, value: player.toast)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(video.title).font(.headline)
-                Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.subheadline).foregroundStyle(.secondary)
-                Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
-                      systemImage: "checkmark.shield")
-                    .font(.caption).foregroundStyle(.green)
-            }
-            .padding(.horizontal, 16)
-            Spacer()
+            .ignoresSafeArea(edges: .bottom)
         }
         .padding(.top, 8)
         .background(Color(uiColor: .systemBackground))
