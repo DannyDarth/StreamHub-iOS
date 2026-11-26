@@ -80,9 +80,36 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
         return true;
       };
       if (!fit()) document.addEventListener("DOMContentLoaded", fit);
+      // Crunchyroll's computer layout has boxes with fixed minimum widths that stick out past a
+      // phone's screen (sideways scrolling): let them shrink to the screen
+      const style = document.createElement("style");
+      style.textContent = `
+        html, body { overflow-x: hidden !important; max-width: 100vw !important; }
+        body * { min-width: 0 !important; }
+        img, video, iframe, canvas { max-width: 100% !important; }
+      `;
+      const addStyle = () => (document.head || document.documentElement).appendChild(style);
+      addStyle();
+      document.addEventListener("DOMContentLoaded", addStyle);
+      let pending = false;
+      const shrink = () => {
+        pending = false;
+        const width = document.documentElement.clientWidth;
+        for (const el of document.querySelectorAll("body *")) {
+          if (el.offsetWidth > width + 1 && !el.closest("video") && getComputedStyle(el).position !== "fixed") {
+            el.style.setProperty("max-width", "100vw", "important");
+            el.style.setProperty("width", "100%", "important");
+          }
+        }
+        window.scrollTo(0, window.scrollY);
+      };
+      const later = () => { if (!pending) { pending = true; setTimeout(shrink, 1200); } };
+      window.addEventListener("load", later);
+      window.addEventListener("resize", later);
       new MutationObserver(() => {
         const meta = document.querySelector('meta[name="viewport"]');
         if (meta && !/device-width/.test(meta.content)) fit();
+        later();
       }).observe(document.documentElement, { childList: true, subtree: true });
       // full screen: the player asks for full screen on its box, which iPhone can't do in an
       // app; play the video in iPhone's own full-screen player instead
