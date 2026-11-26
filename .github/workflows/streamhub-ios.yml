@@ -142,6 +142,56 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  publish-test:
+    name: Publish test build IPA
+    needs: ios
+    timeout-minutes: 10
+    # Pull requests from this repository only (never forks): one rolling "test build" prerelease
+    # whose IPA is a direct download (not a zip), for signing services that take a link.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == 'DannyDarth/StreamHub-iOS'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: streamhub-ios-test-build
+      cancel-in-progress: false
+    steps:
+      - name: Download built IPA
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: streamhub-ios-unsigned-ipa
+          path: dist
+      - name: Verify downloaded IPA structure
+        run: |
+          set -euo pipefail
+          IPA="dist/StreamHub-iOS-unsigned.ipa"
+          test -s "$IPA"
+          unzip -tq "$IPA"
+          unzip -Z -1 "$IPA" | grep -Fxq 'Payload/StreamHub.app/Info.plist'
+          mv "$IPA" dist/StreamHub-iOS-test-unsigned.ipa
+          (cd dist && shasum -a 256 StreamHub-iOS-test-unsigned.ipa > StreamHub-iOS-test-unsigned.ipa.sha256)
+      - name: Replace the test build prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          TAG="streamhub-ios-test"
+          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+          NOTES="$(printf 'Test build from pull request #%s (branch %s, commit %s).\n\nDirect IPA link: https://github.com/%s/releases/download/%s/StreamHub-iOS-test-unsigned.ipa\n\nNot a release: the update banner ignores it.\n' "$PR" "$BRANCH" "$SHA" "$GITHUB_REPOSITORY" "$TAG")"
+          gh release create "$TAG" \
+            dist/StreamHub-iOS-test-unsigned.ipa \
+            dist/StreamHub-iOS-test-unsigned.ipa.sha256 \
+            --title "StreamHub iOS test build (PR #${PR})" \
+            --notes "$NOTES" \
+            --target "$SHA" \
+            --prerelease
+
   publish:
     name: Publish unsigned IPA prerelease
     needs: ios
