@@ -10,6 +10,8 @@ private enum StreamPlatform: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @State private var platform: StreamPlatform = .kick
     @State private var showingFollowed = false
+    @ObservedObject private var updates = UpdateChecker.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -39,6 +41,8 @@ struct ContentView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 4)
 
+                UpdateBanner(checker: updates)
+
                 Picker("Platform", selection: $platform) {
                     ForEach(StreamPlatform.allCases) { item in
                         Text(item.rawValue).tag(item)
@@ -55,6 +59,10 @@ struct ContentView: View {
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
+            .task { await updates.check() }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active { Task { await updates.check() } }
+            }
             .sheet(isPresented: $showingFollowed) {
                 NavigationStack { FollowedView() }
             }
