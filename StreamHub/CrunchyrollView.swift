@@ -94,11 +94,11 @@ final class CrunchyrollBrowser: NSObject, ObservableObject, WKNavigationDelegate
         configuration.allowsInlineMediaPlayback = true
         configuration.allowsPictureInPictureMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        // Crunchyroll's phone site won't play episodes ("get the app"): ask for the desktop site,
-        // as Safari's "Request Desktop Website" does, where Crunchyroll's web player plays them
-        configuration.defaultWebpagePreferences.preferredContentMode = .desktop
-        // Crunchyroll also tells phones apart by the platform and touch screen, not just the
-        // user agent: report what Safari on a Mac reports, in every Crunchyroll frame
+        // Crunchyroll's phone site won't play episodes ("get the app"). It tells phones apart by the
+        // user agent, platform and touch screen: Crunchyroll's pages see what Safari on a Mac
+        // reports, in every frame. The page itself keeps the phone's width (mobile content mode),
+        // so Crunchyroll's own responsive layout fits the screen.
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.desktopScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         if #available(iOS 16.4, *) {
@@ -210,7 +210,10 @@ private struct CrunchyrollWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ container: UIView, context: Context) {
-        if webView.superview !== container { attach(to: container) }
+        // While the player is full screen, WebKit has moved the page into its own full-screen
+        // window: taking it back here left a black screen
+        if #available(iOS 16.0, *), webView.fullscreenState != .notInFullscreen { return }
+        if webView.superview == nil { attach(to: container) }
     }
 
     private func attach(to container: UIView) {
