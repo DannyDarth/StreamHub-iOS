@@ -70,6 +70,7 @@ enum YouTubeError: LocalizedError {
 @MainActor
 final class YouTubeAPI: NSObject, WKNavigationDelegate {
     static let shared = YouTubeAPI()
+    nonisolated static let safariUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15"
     private static let page = URL(string: "https://www.youtube.com/robots.txt")!
 
     private var webView: WKWebView?
@@ -81,6 +82,9 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
             let configuration = WKWebViewConfiguration()
             configuration.websiteDataStore = .default()
             let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 10, height: 10), configuration: configuration)
+            // Safari on a Mac: YouTube gives Safari a ready-to-play stream (HLS) that iPhone's
+            // player plays directly
+            view.customUserAgent = Self.safariUserAgent
             view.navigationDelegate = self
             if #available(iOS 16.4, *) { view.isInspectable = false }
             webView = view
@@ -125,6 +129,20 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
             throw YouTubeError.failed(envelope.error ?? "YouTube answered \(envelope.status).")
         }
         return items
+    }
+
+    struct Player: Decodable {
+        let hls: String?
+        let status: String
+        let reason: String?
+        let title: String
+        let author: String
+        let live: Bool
+    }
+
+    /// The video's stream as YouTube's website gives it to Safari (signed in, when you are).
+    func player(_ id: String) async throws -> Player {
+        try await run(Self.playerBody, ["videoId": id], as: Player.self)
     }
 
     func account() async throws -> YTAccount { try await run(Self.accountBody, as: YTAccount.self) }
@@ -284,6 +302,22 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
       walk(root);
       return token;
     };
+    """#
+
+    private static let playerBody = #"""
+    const signedIn = Boolean(cookie("SAPISID") || cookie("__Secure-3PAPISID"));
+    const r = await api("player", {
+      videoId, contentCheckOk: true, racyCheckOk: true,
+      playbackContext: { contentPlaybackContext: { html5Preference: "HTML5_PREF_WANTS" } },
+    }, signedIn);
+    if (r.status !== 200) return { status: r.status };
+    const p = r.data.playabilityStatus || {};
+    const d = r.data.videoDetails || {};
+    const s = r.data.streamingData || {};
+    return { status: 200, items: {
+      hls: s.hlsManifestUrl || null, status: p.status || "", reason: p.reason || (p.errorScreen ? JSON.stringify(p.errorScreen).match(/"text":"([^"]+)"/)?.[1] : null) || null,
+      title: d.title || "", author: d.author || "", live: Boolean(d.isLive),
+    } };
     """#
 
     private static let accountBody = #"""

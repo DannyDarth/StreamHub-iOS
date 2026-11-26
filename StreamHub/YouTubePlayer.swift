@@ -11,15 +11,45 @@ enum YouTubeStream {
         let title: String
         let author: String
         let live: Bool
+        let userAgent: String
     }
 
     static let clientVersion = "20.10.4"
     static let userAgent = "com.google.ios.youtube/\(clientVersion) (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
 
+    /// The stream to play: first as YouTube's website gives it to Safari, then as YouTube's
+    /// iPhone app gets it. Both are HLS streams without ads.
     static func resolve(_ id: String) async throws -> Resolved {
         guard id.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
             throw YouTubeError.failed("Not a YouTube video.")
         }
+        var reasons: [String] = []
+        do {
+            let web = try await YouTubeAPI.shared.player(id)
+            if web.status == "OK", let hls = web.hls, let url = checked(hls) {
+                return Resolved(url: url, title: web.title, author: web.author, live: web.live,
+                                userAgent: YouTubeAPI.safariUserAgent)
+            }
+            if web.status != "OK" { reasons.append(web.reason ?? "YouTube won't play this video here.") }
+        } catch {
+            reasons.append(error.localizedDescription)
+        }
+        do {
+            return try await resolveIOS(id)
+        } catch {
+            reasons.append(error.localizedDescription)
+        }
+        throw YouTubeError.failed(reasons.first { !$0.contains("ad-free stream") } ?? reasons.last
+            ?? "YouTube didn't give an ad-free stream for this video.")
+    }
+
+    private static func checked(_ string: String) -> URL? {
+        guard let url = URL(string: string), url.scheme == "https", let host = url.host,
+              host.hasSuffix(".googlevideo.com") || host.hasSuffix(".youtube.com") else { return nil }
+        return url
+    }
+
+    private static func resolveIOS(_ id: String) async throws -> Resolved {
         var request = URLRequest(url: URL(string: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")!,
                                  timeoutInterval: 15)
         request.httpMethod = "POST"
@@ -51,14 +81,12 @@ enum YouTubeStream {
         }
         let details = json["videoDetails"] as? [String: Any] ?? [:]
         guard let streaming = json["streamingData"] as? [String: Any],
-              let manifest = streaming["hlsManifestUrl"] as? String,
-              let url = URL(string: manifest), url.scheme == "https",
-              let host = url.host, host.hasSuffix(".googlevideo.com") || host.hasSuffix(".youtube.com") else {
+              let manifest = streaming["hlsManifestUrl"] as? String, let url = checked(manifest) else {
             throw YouTubeError.failed("YouTube didn't give an ad-free stream for this video.")
         }
         return Resolved(url: url, title: details["title"] as? String ?? "",
                         author: details["author"] as? String ?? "",
-                        live: details["isLive"] as? Bool ?? false)
+                        live: details["isLive"] as? Bool ?? false, userAgent: userAgent)
     }
 }
 
@@ -112,7 +140,7 @@ final class YouTubePlayerModel: ObservableObject {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             async let segmentsTask = SponsorBlock.segments(video.id, categories: Self.skipCategories)
             let resolved = try await YouTubeStream.resolve(video.id)
-            let asset = AVURLAsset(url: resolved.url, options: ["AVURLAssetHTTPUserAgentKey": YouTubeStream.userAgent])
+            let asset = AVURLAsset(url: resolved.url, options: ["AVURLAssetHTTPUserAgentKey": resolved.userAgent])
             player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
             player.play()
             state = .playing(resolved)
