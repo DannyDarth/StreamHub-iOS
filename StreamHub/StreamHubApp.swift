@@ -19,10 +19,29 @@ struct StreamHubApp: App {
         }
     }
 
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var signInsRestored = false
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .preferredColorScheme(.dark)
+            Group {
+                if signInsRestored {
+                    ContentView()
+                } else {
+                    // a moment at launch: saved sign-ins go back before any site loads
+                    Color.black.ignoresSafeArea()
+                }
+            }
+            .preferredColorScheme(.dark)
+            .task {
+                await SignInVault.restore()
+                signInsRestored = true
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active, signInsRestored {
+                Task { await SignInVault.save() }
+            }
         }
     }
 }
