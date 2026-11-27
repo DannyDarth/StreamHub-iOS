@@ -2,7 +2,7 @@ import Foundation
 import Security
 import WebKit
 
-/// Keeps your Twitch, Kick and Crunchyroll sign-ins when StreamHub is reinstalled.
+/// Keeps your Twitch, Kick, YouTube and Crunchyroll sign-ins when StreamHub is reinstalled.
 ///
 /// Sign-ins are the sites' cookies in the app's web data, which a reinstall through a signing
 /// service can wipe. StreamHub copies those cookies into the iOS Keychain (this device only),
@@ -12,7 +12,7 @@ import WebKit
 enum SignInVault {
     private static let service = "com.streamhub.ios.signins"
     private static let account = "cookies"
-    private static let domains = ["twitch.tv", "kick.com", "crunchyroll.com"]
+    private static let domains = ["twitch.tv", "kick.com", "crunchyroll.com", "youtube.com", "google.com"]
 
     private struct StoredCookie: Codable {
         let name: String

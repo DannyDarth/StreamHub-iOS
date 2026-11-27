@@ -4,6 +4,7 @@ import SwiftUI
 private enum StreamPlatform: String, CaseIterable, Identifiable {
     case twitch = "Twitch"
     case kick = "Kick"
+    case youtube = "YouTube"
     case crunchyroll = "Crunchyroll"
     var id: String { rawValue }
 }
@@ -57,6 +58,8 @@ struct ContentView: View {
                     KickDirectoryView()
                 case .twitch:
                     TwitchDirectoryView()
+                case .youtube:
+                    YouTubeView()
                 case .crunchyroll:
                     CrunchyrollView()
                 }
@@ -66,6 +69,10 @@ struct ContentView: View {
             .task { await updates.check() }
             .onChange(of: scenePhase) { phase in
                 if phase == .active { Task { await updates.check() } }
+            }
+            // leaving the YouTube tab stops its video
+            .onChange(of: platform) { newValue in
+                if newValue != .youtube { YouTubePlayerHost.shared.close() }
             }
             .sheet(isPresented: $showingFollowed) {
                 NavigationStack { FollowedView() }

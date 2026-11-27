@@ -16,8 +16,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.streamhub.ios
         # the app's version: a version without a "streamhub-ios-v<version>" release is published as one
-        MARKETING_VERSION: "1.2.0"
-        CURRENT_PROJECT_VERSION: "120"
+        MARKETING_VERSION: "1.3.0"
+        CURRENT_PROJECT_VERSION: "130"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: StreamHub
