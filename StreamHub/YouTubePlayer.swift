@@ -9,6 +9,59 @@ enum SponsorBlock {
         let UUID: String
     }
 
+    enum Action: String, CaseIterable, Codable {
+        case skip, ask, off
+        var label: String {
+            switch self {
+            case .skip: return "Skip automatically"
+            case .ask: return "Show a Skip button"
+            case .off: return "Don't skip"
+            }
+        }
+    }
+
+    /// The categories in the order Settings lists them, with what each one means.
+    struct Category: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        init(_ id: String, _ title: String, _ detail: String) {
+            self.id = id
+            self.title = title
+            self.detail = detail
+        }
+    }
+
+    static let categories: [Category] = [
+        Category("sponsor", "Sponsor", "Paid promotions and sponsored segments"),
+        Category("selfpromo", "Self-promotion", "Merch, Patreon, the creator's other channels"),
+        Category("interaction", "Interaction reminder", "\"Like and subscribe\" reminders"),
+        Category("intro", "Intro", "Intro animations and openings"),
+        Category("outro", "Outro", "End cards and credits"),
+        Category("preview", "Preview / recap", "Previews of what's coming, recaps of earlier episodes"),
+        Category("filler", "Filler", "Tangents and jokes off the main topic"),
+        Category("music_offtopic", "Non-music part", "In music videos, the parts that aren't music"),
+    ]
+
+    static let defaults: [String: Action] = [
+        "sponsor": .skip, "selfpromo": .skip, "interaction": .skip,
+        "intro": .ask, "outro": .ask, "preview": .off, "filler": .off, "music_offtopic": .off,
+    ]
+
+    private static let settingsKey = "streamhub.sponsorBlock"
+
+    /// What to do with each category (Settings → YouTube).
+    static var actions: [String: Action] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: settingsKey),
+                  let saved = try? JSONDecoder().decode([String: Action].self, from: data) else { return defaults }
+            return defaults.merging(saved) { _, new in new }
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) { UserDefaults.standard.set(data, forKey: settingsKey) }
+        }
+    }
+
     static let names: [String: String] = [
         "sponsor": "sponsor", "selfpromo": "self-promotion", "interaction": "like and subscribe reminder",
         "intro": "intro", "outro": "outro", "preview": "preview", "music_offtopic": "non-music part",
@@ -43,7 +96,8 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
     private var toastTask: Task<Void, Never>?
     private var segmentsJSON = "[]"
 
-    static let skipCategories = ["sponsor", "selfpromo", "interaction"]
+    /// A segment with a Skip button showing (SponsorBlock "Show a Skip button").
+    @Published var offered: (id: String, name: String)?
 
     init(video: YTVideo) {
         self.video = video
@@ -68,13 +122,16 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
             webView.configuration.userContentController.add(rules)
         }
         load()
-        let segments = video.live ? [] : await SponsorBlock.segments(video.id, categories: Self.skipCategories)
-        sendSegments(segments)
+        let actions = SponsorBlock.actions
+        let categories = SponsorBlock.categories.map(\.id).filter { (actions[$0] ?? .off) != .off }
+        let segments = video.live ? [] : await SponsorBlock.segments(video.id, categories: categories)
+        sendSegments(segments, actions: actions)
     }
 
-    private func sendSegments(_ segments: [SponsorBlock.Segment]) {
+    private func sendSegments(_ segments: [SponsorBlock.Segment], actions: [String: SponsorBlock.Action]) {
         let items = segments.map { ["start": $0.segment[0], "end": $0.segment[1], "id": $0.UUID,
-                                    "name": SponsorBlock.names[$0.category] ?? $0.category] as [String: Any] }
+                                    "name": SponsorBlock.names[$0.category] ?? $0.category,
+                                    "ask": actions[$0.category] == .ask] as [String: Any] }
         if let data = try? JSONSerialization.data(withJSONObject: items), let json = String(data: data, encoding: .utf8) {
             segmentsJSON = json
             webView.evaluateJavaScript("window.__streamhubSegments = \(json);", completionHandler: nil)
@@ -102,11 +159,24 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
             adHidden = (body["on"] as? Bool) ?? false
         case "skip":
             show("Skipped \(body["name"] as? String ?? "segment")")
+        case "offer":
+            if let id = body["id"] as? String { offered = (id, body["name"] as? String ?? "segment") }
+        case "offer-end":
+            if (body["id"] as? String) == offered?.id { offered = nil }
         case "ready":
             webView.evaluateJavaScript("window.__streamhubSegments = \(segmentsJSON);", completionHandler: nil)
         default:
             break
         }
+    }
+
+    /// The Skip button for an offered segment.
+    func skipOffered() {
+        guard let id = offered?.id,
+              let data = try? JSONSerialization.data(withJSONObject: [id]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        offered = nil
+        webView.evaluateJavaScript("window.__streamhubSkip && window.__streamhubSkip(\(json)[0]);", completionHandler: nil)
     }
 
     private func show(_ message: String) {
@@ -218,14 +288,29 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           if (video) { video.muted = wasMuted; video.playbackRate = 1; }
           post({ kind: "ad", on: false });
         }
-        // 3. SponsorBlock: skip the marked segments
+        // 3. SponsorBlock: skip the marked segments, or offer a Skip button for them
         if (!ad && video && Array.isArray(window.__streamhubSegments)) {
           window.__streamhubSkipped = window.__streamhubSkipped || {};
+          window.__streamhubOffered = window.__streamhubOffered || {};
+          window.__streamhubSkip = (id) => {
+            const s = window.__streamhubSegments.find((x) => x.id === id);
+            const v = document.querySelector("video");
+            if (s && v) { window.__streamhubSkipped[s.id] = true; v.currentTime = s.end; }
+          };
           for (const s of window.__streamhubSegments) {
-            if (video.currentTime >= s.start && video.currentTime < s.end - 0.5 && !window.__streamhubSkipped[s.id]) {
-              window.__streamhubSkipped[s.id] = true;
-              video.currentTime = s.end;
-              post({ kind: "skip", name: s.name });
+            const inside = video.currentTime >= s.start && video.currentTime < s.end - 0.5;
+            if (!s.ask) {
+              if (inside && !window.__streamhubSkipped[s.id]) {
+                window.__streamhubSkipped[s.id] = true;
+                video.currentTime = s.end;
+                post({ kind: "skip", name: s.name });
+              }
+            } else if (inside && !window.__streamhubOffered[s.id]) {
+              window.__streamhubOffered[s.id] = true;
+              post({ kind: "offer", id: s.id, name: s.name });
+            } else if (!inside && window.__streamhubOffered[s.id]) {
+              window.__streamhubOffered[s.id] = false;
+              post({ kind: "offer-end", id: s.id });
             }
           }
         }
@@ -417,8 +502,7 @@ struct ExpandedYouTubePlayer: View {
                         Text(video.title).font(.headline)
                         Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.subheadline).foregroundStyle(.secondary)
-                        Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
-                              systemImage: "checkmark.shield")
+                        Label("No ads · SponsorBlock (Settings → YouTube)", systemImage: "checkmark.shield")
                             .font(.caption).foregroundStyle(.green)
                     }
                     .padding(.horizontal, 16)
@@ -454,6 +538,22 @@ private struct PlayerStage: View {
                 ZStack {
                     Color.black
                     Text(message).font(mini ? .caption2 : .subheadline).multilineTextAlignment(.center).padding()
+                }
+            }
+            if let offered = player.offered {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Button { player.skipOffered() } label: {
+                            Label("Skip \(offered.name)", systemImage: "forward.end.fill")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(12)
+                    }
                 }
             }
             if let toast = player.toast, !mini {
