@@ -11,6 +11,9 @@ struct YTVideo: Codable, Identifiable, Hashable {
     let published: String
     let views: String
     let avatar: String?
+    /// History: the day YouTube files it under, and its "Remove from watch history" token.
+    var day: String? = nil
+    var remove: String? = nil
 
     var thumbnail: URL? { URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg") }
 }
@@ -153,6 +156,18 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
 
     func subscriptions(next: String? = nil) async throws -> YTFeed {
         try await run(Self.feedBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
+    }
+
+    func history(next: String? = nil) async throws -> YTFeed {
+        try await run(Self.historyBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
+    }
+
+    /// YouTube's own "Remove from watch history" for one video.
+    func removeFromHistory(_ token: String) async throws {
+        guard token.count < 4000, token.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else {
+            throw YouTubeError.failed("Can't remove this video.")
+        }
+        _ = try await run(Self.historyRemoveBody, ["token": token], as: Bool.self)
     }
 
     func search(_ query: String) async throws -> YTSearch {
@@ -344,6 +359,44 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const { videos } = collect(r.data);
     if (!token && !videos.length && /signInEndpoint|Sign in/.test(JSON.stringify(r.data).slice(0, 20000))) return { status: 401 };
     return { status: 200, items: { videos, next: nextPage(r.data) } };
+    """#
+
+    private static let historyBody = #"""
+    const r = await api("browse", token ? { continuation: token } : { browseId: "FEhistory" }, true);
+    if (r.status !== 200) return { status: r.status };
+    const videos = [];
+    const seen = new Set();
+    const walk = (n) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      const section = n.itemSectionRenderer;
+      if (section) {
+        const header = section.header || {};
+        const day = text((header.itemSectionHeaderRenderer || {}).title)
+          || (JSON.stringify(header).match(/"(?:title|content)":"([^"]+)"/) || [])[1] || "";
+        for (const item of section.contents || []) {
+          const v = collect(item).videos[0];
+          if (!v || seen.has(v.id)) continue;
+          seen.add(v.id);
+          const json = JSON.stringify(item);
+          const remove = (json.match(/Remove from (?:watch )?history[^]{0,600}?"feedbackToken":"([^"]+)"/i)
+            || json.match(/"feedbackEndpoint":\{"feedbackToken":"([^"]+)"/) || [])[1] || null;
+          videos.push({ ...v, day, remove });
+        }
+        return;
+      }
+      for (const k in n) if (k !== "frameworkUpdates") walk(n[k]);
+    };
+    walk(r.data);
+    if (!videos.length) for (const v of collect(r.data).videos) if (!seen.has(v.id)) { seen.add(v.id); videos.push({ ...v, day: "" }); }
+    if (!token && !videos.length && /signInEndpoint|Sign in/.test(JSON.stringify(r.data).slice(0, 20000))) return { status: 401 };
+    return { status: 200, items: { videos, next: nextPage(r.data) } };
+    """#
+
+    private static let historyRemoveBody = #"""
+    const r = await api("feedback", { feedbackTokens: [token], isFeedbackTokenUnencrypted: false, shouldMerge: false }, true);
+    if (r.status !== 200) return { status: r.status };
+    return { status: 200, items: true };
     """#
 
     private static let homeBody = #"""
