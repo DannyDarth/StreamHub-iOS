@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 import WebKit
 
@@ -68,16 +69,70 @@ enum SponsorBlock {
         "filler": "filler",
     ]
 
+    private static let cacheKey = "streamhub.sponsorBlockCache"
+    private static let cacheHours: Double = 6
+
+    /// The video's segments for these categories. Fast path: SponsorBlock's hash-prefix lookup
+    /// (the one its own extension uses, well cached) with a 4-second limit, then the plain lookup;
+    /// answers are remembered for 6 hours.
     static func segments(_ id: String, categories: [String]) async -> [Segment] {
-        guard !categories.isEmpty,
-              let list = String(data: (try? JSONSerialization.data(withJSONObject: categories)) ?? Data(), encoding: .utf8),
-              var components = URLComponents(string: "https://sponsor.ajay.app/api/skipSegments") else { return [] }
-        components.queryItems = [URLQueryItem(name: "videoID", value: id), URLQueryItem(name: "categories", value: list)]
-        guard let url = components.url,
-              let result = try? await URLSession.shared.data(from: url),
-              (result.1 as? HTTPURLResponse)?.statusCode == 200, result.0.count < 1_000_000 else { return [] }
-        return (try? JSONDecoder().decode([Segment].self, from: result.0))?
-            .filter { $0.segment.count == 2 && $0.segment[1] > $0.segment[0] } ?? []
+        guard !categories.isEmpty else { return [] }
+        let keep = { (all: [Segment]) in
+            all.filter { categories.contains($0.category) && $0.segment.count == 2 && $0.segment[1] > $0.segment[0] }
+        }
+        if let all = cached(id) { return keep(all) }
+        let everyCategory = String(data: (try? JSONSerialization.data(withJSONObject: Self.categories.map(\.id))) ?? Data(),
+                                   encoding: .utf8) ?? "[]"
+        var found: [Segment]?
+        if let prefix = sha256Prefix(id),
+           var components = URLComponents(string: "https://sponsor.ajay.app/api/skipSegments/\(prefix)") {
+            components.queryItems = [URLQueryItem(name: "categories", value: everyCategory)]
+            if let url = components.url, let (data, status) = await get(url, seconds: 4) {
+                struct Video: Decodable { let videoID: String; let segments: [Segment] }
+                if status == 404 { found = [] }
+                else if status == 200, let videos = try? JSONDecoder().decode([Video].self, from: data) {
+                    found = videos.first { $0.videoID == id }?.segments ?? []
+                }
+            }
+        }
+        if found == nil, var components = URLComponents(string: "https://sponsor.ajay.app/api/skipSegments") {
+            components.queryItems = [URLQueryItem(name: "videoID", value: id), URLQueryItem(name: "categories", value: everyCategory)]
+            if let url = components.url, let (data, status) = await get(url, seconds: 8) {
+                if status == 404 { found = [] }
+                else if status == 200 { found = try? JSONDecoder().decode([Segment].self, from: data) }
+            }
+        }
+        guard let all = found else { return [] }
+        remember(id, all)
+        return keep(all)
+    }
+
+    private static func get(_ url: URL, seconds: Double) async -> (Data, Int)? {
+        guard let (data, response) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: seconds)),
+              data.count < 2_000_000 else { return nil }
+        return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    private static func sha256Prefix(_ id: String) -> String? {
+        let digest = SHA256.hash(data: Data(id.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(4).description
+    }
+
+    private struct Cached: Codable { let at: Date; let segments: [Segment] }
+
+    private static func cached(_ id: String) -> [Segment]? {
+        guard let data = UserDefaults.standard.data(forKey: cacheKey),
+              let all = try? JSONDecoder().decode([String: Cached].self, from: data),
+              let entry = all[id], Date().timeIntervalSince(entry.at) < cacheHours * 3600 else { return nil }
+        return entry.segments
+    }
+
+    private static func remember(_ id: String, _ segments: [Segment]) {
+        var all = (UserDefaults.standard.data(forKey: cacheKey))
+            .flatMap { try? JSONDecoder().decode([String: Cached].self, from: $0) } ?? [:]
+        all = all.filter { Date().timeIntervalSince($0.value.at) < cacheHours * 3600 }
+        all[id] = Cached(at: Date(), segments: segments)
+        if let data = try? JSONEncoder().encode(all) { UserDefaults.standard.set(data, forKey: cacheKey) }
     }
 }
 
@@ -118,14 +173,16 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
     }
 
     func start() async {
+        // SponsorBlock starts loading right away, alongside the page
+        let actions = SponsorBlock.actions
+        let categories = SponsorBlock.categories.map(\.id).filter { (actions[$0] ?? .off) != .off }
+        let id = video.id, live = video.live
+        let segmentsTask = Task.detached { live ? [] : await SponsorBlock.segments(id, categories: categories) }
         if let rules = await Self.blockList() {
             webView.configuration.userContentController.add(rules)
         }
         load()
-        let actions = SponsorBlock.actions
-        let categories = SponsorBlock.categories.map(\.id).filter { (actions[$0] ?? .off) != .off }
-        let segments = video.live ? [] : await SponsorBlock.segments(video.id, categories: categories)
-        sendSegments(segments, actions: actions)
+        sendSegments(await segmentsTask.value, actions: actions)
     }
 
     private func sendSegments(_ segments: [SponsorBlock.Segment], actions: [String: SponsorBlock.Action]) {
@@ -242,8 +299,12 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           {"trigger":{"url-filter":"^https?://[^/]*youtube\\.com/get_midroll_info"},"action":{"type":"block"}}
         ]
         """#
+        // compiled once, then looked up
+        if let compiled = try? await WKContentRuleListStore.default().contentRuleList(forIdentifier: "streamhub-youtube-ads-1") {
+            return compiled
+        }
         return try? await WKContentRuleListStore.default().compileContentRuleList(
-            forIdentifier: "streamhub-youtube-ads", encodedContentRuleList: rules)
+            forIdentifier: "streamhub-youtube-ads-1", encodedContentRuleList: rules)
     }
 
     /// Runs in YouTube's pages before YouTube's own scripts.

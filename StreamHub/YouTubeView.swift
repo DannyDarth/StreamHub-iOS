@@ -7,6 +7,7 @@ struct YouTubeView: View {
     private enum FeedSection: String, CaseIterable, Identifiable {
         case home = "Home"
         case subscriptions = "Subscriptions"
+        case history = "History"
         var id: String { rawValue }
     }
 
@@ -89,6 +90,15 @@ struct YouTubeView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
+                case .history:
+                    if signedIn {
+                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }).id("history-\(reloadToken)")
+                    } else {
+                        Spacer()
+                        Text("Sign in to see the videos you've watched.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
                 }
             }
         }
@@ -123,9 +133,10 @@ struct YouTubeView: View {
     }
 }
 
-/// Home or Subscriptions, loading more as you scroll. Subscriptions are grouped by day.
+/// Home, Subscriptions or History, loading more as you scroll. Subscriptions and History are
+/// grouped by day.
 private struct YouTubeFeedList: View {
-    enum Kind { case home, subscriptions }
+    enum Kind { case home, subscriptions, history }
     let kind: Kind
     let play: (YTVideo) -> Void
 
@@ -138,7 +149,7 @@ private struct YouTubeFeedList: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                if kind == .subscriptions {
+                if kind != .home {
                     ForEach(groups) { group in
                         Text(group.label).font(.title3.weight(.bold)).padding(.horizontal, 16)
                         ForEach(group.videos) { video in row(video) }
@@ -172,7 +183,21 @@ private struct YouTubeFeedList: View {
     }
 
     private func row(_ video: YTVideo) -> some View {
-        YouTubeVideoRow(video: video, play: play)
+        YouTubeVideoRow(video: video, play: play, onRemove: kind == .history && video.remove != nil ? { remove(video) } : nil)
+    }
+
+    /// History: take a video out of your YouTube watch history.
+    private func remove(_ video: YTVideo) {
+        guard let token = video.remove else { return }
+        Task {
+            do {
+                try await YouTubeAPI.shared.removeFromHistory(token)
+                videos.removeAll { $0.id == video.id }
+                if YouTubePlayerHost.shared.isPlaying(video) { YouTubePlayerHost.shared.close() }
+            } catch {
+                self.error = "Couldn't remove it: \(error.localizedDescription)"
+            }
+        }
     }
 
     private struct DayGroup: Identifiable {
@@ -184,7 +209,9 @@ private struct YouTubeFeedList: View {
     private var groups: [DayGroup] {
         var result: [DayGroup] = []
         for video in videos {
-            let label = video.live ? "Live now" : YouTubeDays.label(video.published)
+            let label = kind == .history
+                ? ((video.day?.isEmpty == false) ? video.day! : "Earlier")
+                : video.live ? "Live now" : YouTubeDays.label(video.published)
             if let index = result.firstIndex(where: { $0.label == label }) {
                 result[index].videos.append(video)
             } else {
@@ -204,12 +231,19 @@ private struct YouTubeFeedList: View {
             switch kind {
             case .home: page = try await YouTubeAPI.shared.home(next: more ? next : nil)
             case .subscriptions: page = try await YouTubeAPI.shared.subscriptions(next: more ? next : nil)
+            case .history: page = try await YouTubeAPI.shared.history(next: more ? next : nil)
             }
             let seen = Set(videos.map(\.id))
             videos += page.videos.filter { !seen.contains($0.id) }
             next = page.next
             loaded = true
-            if videos.isEmpty { error = kind == .home ? "YouTube didn't recommend any videos." : "No new videos." }
+            if videos.isEmpty {
+                switch kind {
+                case .home: error = "YouTube didn't recommend any videos."
+                case .subscriptions: error = "No new videos."
+                case .history: error = "Your watch history is empty (or turned off in your YouTube account)."
+                }
+            }
         } catch {
             self.error = error.localizedDescription
             loaded = true
@@ -304,6 +338,8 @@ private struct YouTubeVideoRow: View {
     let video: YTVideo
     let play: (YTVideo) -> Void
     var showChannel = true
+    /// History: Remove from watch history.
+    var onRemove: (() -> Void)? = nil
     @ObservedObject private var host = YouTubePlayerHost.shared
 
     var body: some View {
@@ -360,6 +396,20 @@ private struct YouTubeVideoRow: View {
                     }
                     Text([video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if let onRemove {
+                    Spacer(minLength: 4)
+                    Menu {
+                        Button(role: .destructive, action: onRemove) {
+                            Label("Remove from watch history", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                    }
+                    .accessibilityLabel("More")
                 }
             }
     }
