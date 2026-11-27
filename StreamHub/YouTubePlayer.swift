@@ -227,6 +227,20 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         }
     }
 
+    /// Full screen in iPhone's own video player (what YouTube's full-screen button does here).
+    /// False if the page didn't allow it.
+    func enterFullScreen() async -> Bool {
+        let script = """
+        const video = document.querySelector("video");
+        if (!video || !video.webkitEnterFullscreen) return false;
+        try { video.webkitEnterFullscreen(); } catch (e) { return false; }
+        await new Promise((done) => setTimeout(done, 600));
+        return Boolean(video.webkitDisplayingFullscreen || document.webkitFullscreenElement || document.fullscreenElement);
+        """
+        let result = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+        return (result as? Bool) ?? false
+    }
+
     /// The Skip button for an offered segment.
     func skipOffered() {
         guard let id = offered?.id,
@@ -498,10 +512,16 @@ struct InlineYouTubePlayer: View {
                 Label("No ads · SponsorBlock", systemImage: "checkmark.shield")
                     .font(.caption).foregroundStyle(.green)
                 Spacer()
-                Button { host.expanded = true } label: {
+                Button {
+                    Task {
+                        // iPhone's own full-screen player, the same as YouTube's full-screen
+                        // button; if the page won't allow it, the bigger player instead
+                        if await !(host.player?.enterFullScreen() ?? false) { host.expanded = true }
+                    }
+                } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
-                .accessibilityLabel("Bigger player")
+                .accessibilityLabel("Full screen")
                 Button {
                     if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
                 } label: {
