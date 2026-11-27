@@ -230,10 +230,11 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           }
         }
       }, 250);
-      // 4. on YouTube's mobile page: start playing with sound (YouTube starts it muted), and show
-      //    only the player. Only what's beside the player is hidden, never what holds it.
+      // 4. on YouTube's mobile page: start playing (muted, as YouTube does: tap the player to
+      //    unmute), and show only the player. Only what's beside the player is hidden, never what
+      //    holds it.
       if (location.hostname === "m.youtube.com" && window.top === window) {
-        let unmuted = false;
+        let started = false;
         const isolate = () => {
           const holder = document.querySelector("#player-container-id")
             || (document.querySelector(".html5-video-player") || {}).parentElement;
@@ -253,6 +254,17 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
                                                 "max-height": "none", margin: "0", padding: "0", "z-index": "2147483000", background: "#000" })) {
             holder.style.setProperty(k, v, "important");
           }
+          for (const el of holder.querySelectorAll("#player, .html5-video-player, .html5-video-container, video")) {
+            el.style.setProperty("width", "100%", "important");
+            el.style.setProperty("height", "100%", "important");
+            el.style.setProperty("max-height", "none", "important");
+          }
+          const video = holder.querySelector("video");
+          if (video) {
+            video.style.setProperty("object-fit", "contain", "important");
+            video.style.setProperty("left", "0", "important");
+            video.style.setProperty("top", "0", "important");
+          }
           document.documentElement.style.setProperty("background", "#000", "important");
           document.body && document.body.style.setProperty("overflow", "hidden", "important");
         };
@@ -261,21 +273,23 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           const video = document.querySelector("video");
           const player = document.querySelector(".html5-video-player");
           const ad = player && player.classList.contains("ad-showing");
-          if (video && video.readyState > 0 && !ad) {
-            if (video.paused && !unmuted) {
+          if (video && video.readyState > 0 && !ad && !started) {
+            if (video.paused) {
               video.play().catch(() => document.querySelector(".ytp-large-play-button, .ytmCuedOverlayPlayButton")?.click());
-            }
-            if (!unmuted && !video.paused) {
-              unmuted = true;
-              video.muted = false;
-              try { player && player.unMute && player.unMute(); } catch (e) {}
-              document.querySelectorAll(".ytp-unmute, .ytmUnmuteButton, .unmute-button, button[aria-label*='nmute']").forEach((b) => b.click());
+            } else {
+              started = true;
             }
           }
         }, 500);
         setTimeout(() => clearInterval(tick), 120000);
       }
       document.addEventListener("DOMContentLoaded", () => post({ kind: "ready" }));
+      // SponsorBlock segments can arrive before this page: ask for them again until they're here
+      let asks = 0;
+      const ask = setInterval(() => {
+        if (Array.isArray(window.__streamhubSegments) || ++asks > 12) clearInterval(ask);
+        else post({ kind: "ready" });
+      }, 2500);
     })();
     """#
 }
@@ -296,9 +310,8 @@ final class YouTubePlayerHost: ObservableObject {
     static let shared = YouTubePlayerHost()
     @Published private(set) var player: YouTubeWebPlayer?
     @Published private(set) var video: YTVideo?
-    @Published var fullScreen = false {
-        didSet { if fullScreen != oldValue { Self.rotate(landscape: fullScreen) } }
-    }
+    /// The bigger player screen is open (the video moves there and back without restarting).
+    @Published var expanded = false
 
     func isPlaying(_ video: YTVideo) -> Bool { self.video?.id == video.id && player != nil }
 
@@ -314,16 +327,10 @@ final class YouTubePlayerHost: ObservableObject {
     /// Stop the video (it was closed, or scrolled out of sight).
     func close(_ video: YTVideo? = nil) {
         if let video, video.id != self.video?.id { return }
-        fullScreen = false
+        expanded = false
         player?.stop()
         player = nil
         self.video = nil
-    }
-
-    private static func rotate(landscape: Bool) {
-        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
-        scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: landscape ? .landscapeRight : .portrait)) { _ in }
     }
 }
 
@@ -335,7 +342,7 @@ struct InlineYouTubePlayer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let player = host.player, !host.fullScreen {
+            if let player = host.player, !host.expanded {
                 PlayerStage(player: player, video: video, mini: false)
                     .aspectRatio(16 / 9, contentMode: .fit)
             } else {
@@ -345,10 +352,10 @@ struct InlineYouTubePlayer: View {
                 Label("No ads · SponsorBlock", systemImage: "checkmark.shield")
                     .font(.caption).foregroundStyle(.green)
                 Spacer()
-                Button { host.fullScreen = true } label: {
+                Button { host.expanded = true } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
-                .accessibilityLabel("Full screen")
+                .accessibilityLabel("Bigger player")
                 Button {
                     if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
                 } label: {
@@ -364,31 +371,62 @@ struct InlineYouTubePlayer: View {
             .padding(.horizontal, 16)
         }
         // scrolled out of sight: the video stops
-        .onDisappear { if !host.fullScreen { host.close(video) } }
+        .onDisappear { if !host.expanded { host.close(video) } }
     }
 }
 
-/// Full screen: the phone turns sideways and the video fills it. × (or turning back) leaves.
-struct FullScreenYouTubePlayer: View {
+/// The bigger player: the video as large as the screen allows, title below. ⌄ goes back to the
+/// list with the video still playing there; × stops it.
+struct ExpandedYouTubePlayer: View {
     @ObservedObject var host = YouTubePlayerHost.shared
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.black.ignoresSafeArea()
-            if let player = host.player, let video = host.video {
-                PlayerStage(player: player, video: video, mini: false)
-                    .ignoresSafeArea()
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 22) {
+                    Button { host.expanded = false } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .accessibilityLabel("Back to the list")
+                    Spacer()
+                    if let video = host.video {
+                        Button {
+                            if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
+                        } label: {
+                            Image(systemName: "arrow.up.forward.app")
+                        }
+                        .accessibilityLabel("Open in the YouTube app")
+                    }
+                    Button { host.close() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Stop the video")
+                }
+                .font(.title3.weight(.semibold))
+                .padding(.horizontal, 16)
+                .frame(height: 44)
+
+                if let player = host.player, let video = host.video {
+                    // as wide as the screen, and as tall as it can be while the title still shows
+                    PlayerStage(player: player, video: video, mini: false)
+                        .frame(width: geo.size.width,
+                               height: min(geo.size.height * 0.62, max(geo.size.width * 9 / 16, geo.size.width * 0.75)))
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(video.title).font(.headline)
+                        Text([video.channel, video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Label("No ads · SponsorBlock skips sponsors, self-promotion and reminders",
+                              systemImage: "checkmark.shield")
+                            .font(.caption).foregroundStyle(.green)
+                    }
+                    .padding(.horizontal, 16)
+                }
+                Spacer(minLength: 0)
             }
-            Button { host.fullScreen = false } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.bold))
-                    .padding(10)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .padding(12)
-            .accessibilityLabel("Leave full screen")
         }
-        .statusBarHidden()
+        .background(Color(uiColor: .systemBackground))
     }
 }
 

@@ -93,7 +93,7 @@ struct YouTubeView: View {
             }
         }
         .task { await refreshAccount() }
-        .fullScreenCover(isPresented: $host.fullScreen) { FullScreenYouTubePlayer() }
+        .fullScreenCover(isPresented: $host.expanded) { ExpandedYouTubePlayer() }
         .sheet(isPresented: $showSignIn) {
             YouTubeSignInSheet {
                 showSignIn = false
