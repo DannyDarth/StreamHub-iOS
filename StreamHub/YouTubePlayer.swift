@@ -498,6 +498,7 @@ final class YouTubePlayerHost: ObservableObject {
 struct InlineYouTubePlayer: View {
     @ObservedObject var host = YouTubePlayerHost.shared
     let video: YTVideo
+    @AppStorage("streamhub.ytComments") private var showComments = true
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -522,6 +523,12 @@ struct InlineYouTubePlayer: View {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
                 .accessibilityLabel("Full screen")
+                if showComments {
+                    Button { host.expanded = true } label: {
+                        Image(systemName: "text.bubble")
+                    }
+                    .accessibilityLabel("Comments")
+                }
                 Button {
                     if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") { openURL(url) }
                 } label: {
@@ -545,6 +552,7 @@ struct InlineYouTubePlayer: View {
 /// list with the video still playing there; × stops it.
 struct ExpandedYouTubePlayer: View {
     @ObservedObject var host = YouTubePlayerHost.shared
+    @AppStorage("streamhub.ytComments") private var showComments = true
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -587,6 +595,11 @@ struct ExpandedYouTubePlayer: View {
                             .font(.caption).foregroundStyle(.green)
                     }
                     .padding(.horizontal, 16)
+
+                    if showComments {
+                        Divider()
+                        YouTubeCommentsList(videoId: video.id).id(video.id)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -679,5 +692,186 @@ private struct PlayerWebView: UIViewRepresentable {
             webView.topAnchor.constraint(equalTo: container.topAnchor),
             webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+    }
+}
+
+/// A video's comments under the bigger player (Settings → YouTube → Show comments), loading more
+/// as you scroll.
+struct YouTubeCommentsList: View {
+    let videoId: String
+    @State private var comments: [YTComment] = []
+    @State private var next: String?
+    @State private var count = ""
+    @State private var off = false
+    @State private var loading = false
+    @State private var loaded = false
+    @State private var error: String?
+    @State private var create: String?
+    /// Replies you posted from StreamHub, by comment.
+    @State private var mine: [String: [String]] = [:]
+    @State private var composing: Composer?
+
+    struct Composer: Identifiable {
+        let id = UUID()
+        let params: String
+        let reply: Bool
+        let to: YTComment?
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text(count.isEmpty ? "Comments" : count).font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if let create {
+                        Button {
+                            composing = Composer(params: create, reply: false, to: nil)
+                        } label: {
+                            Label("Add a comment", systemImage: "square.and.pencil").font(.footnote.weight(.semibold))
+                        }
+                    }
+                }
+                ForEach(comments) { comment in
+                    HStack(alignment: .top, spacing: 10) {
+                        AsyncImage(url: comment.avatar.flatMap(URL.init(string:))) { image in
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        } placeholder: {
+                            Color(uiColor: .tertiarySystemBackground)
+                        }
+                        .frame(width: 28, height: 28)
+                        .clipShape(Circle())
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(comment.author).font(.caption.weight(.semibold)).lineLimit(1)
+                                Text(comment.published).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text(comment.text).font(.subheadline)
+                            let meta = [comment.likes.isEmpty || comment.likes == "0" ? "" : "👍 \(comment.likes)",
+                                        comment.replies.isEmpty || comment.replies == "0" ? "" : "\(comment.replies) \(comment.replies == "1" ? "reply" : "replies")"]
+                                .filter { !$0.isEmpty }.joined(separator: " · ")
+                            HStack(spacing: 12) {
+                                if !meta.isEmpty { Text(meta).font(.caption2).foregroundStyle(.secondary) }
+                                if let params = comment.reply {
+                                    Button("Reply") { composing = Composer(params: params, reply: true, to: comment) }
+                                        .font(.caption2.weight(.semibold))
+                                }
+                            }
+                            ForEach(mine[comment.id] ?? [], id: \.self) { text in
+                                Text("You: \(text)")
+                                    .font(.caption)
+                                    .padding(.leading, 8)
+                                    .overlay(alignment: .leading) { Rectangle().fill(Color.accentColor).frame(width: 2) }
+                            }
+                        }
+                    }
+                }
+                if let error {
+                    VStack(spacing: 6) {
+                        Text("Couldn't load comments.").font(.footnote).foregroundStyle(.secondary)
+                        Button("Try again") { Task { await load() } }.font(.footnote)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .help(error)
+                } else if off {
+                    Text("Comments are turned off for this video.").font(.footnote).foregroundStyle(.secondary)
+                } else if loaded && comments.isEmpty {
+                    Text("No comments yet.").font(.footnote).foregroundStyle(.secondary)
+                } else if !loaded || next != nil {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .id(comments.count)
+                        .onAppear { Task { await load() } }
+                }
+            }
+            .padding(16)
+        }
+        .sheet(item: $composing) { composer in
+            CommentComposer(composer: composer) { text in
+                if let to = composer.to {
+                    mine[to.id, default: []].append(text)
+                } else {
+                    comments.insert(YTComment(id: "mine-\(UUID().uuidString)", author: "You", avatar: nil, text: text,
+                                              published: "just now", likes: "", replies: "", pinned: false, reply: nil), at: 0)
+                }
+            }
+        }
+    }
+
+    private func load() async {
+        guard !loading, !(loaded && next == nil) else { return }
+        loading = true
+        error = nil
+        defer { loading = false }
+        do {
+            let page = try await YouTubeAPI.shared.comments(videoId, next: loaded ? next : nil)
+            let seen = Set(comments.map(\.id))
+            comments += page.comments.filter { !seen.contains($0.id) }
+            next = page.next
+            if !page.count.isEmpty { count = page.count }
+            off = page.off
+            if create == nil { create = page.create }
+            loaded = true
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+/// Write a comment or a reply; it's posted as your signed-in YouTube account.
+private struct CommentComposer: View {
+    let composer: YouTubeCommentsList.Composer
+    let posted: (String) -> Void
+    @State private var text = ""
+    @State private var sending = false
+    @State private var error: String?
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 12) {
+                if let to = composer.to {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(to.author).font(.caption.weight(.semibold))
+                        Text(to.text).font(.footnote).foregroundStyle(.secondary).lineLimit(4)
+                    }
+                }
+                TextEditor(text: $text)
+                    .focused($focused)
+                    .frame(minHeight: 120)
+                    .padding(6)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+                Text("Posted publicly as your signed-in YouTube account.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding()
+            .navigationTitle(composer.reply ? "Reply" : "Add a comment")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(sending ? "Posting…" : (composer.reply ? "Reply" : "Post")) {
+                        Task { await send() }
+                    }
+                    .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .onAppear { focused = true }
+        }
+    }
+
+    private func send() async {
+        sending = true
+        error = nil
+        do {
+            try await YouTubeAPI.shared.postComment(params: composer.params, text: text, reply: composer.reply)
+            posted(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            dismiss()
+        } catch {
+            self.error = "Couldn't post: \(error.localizedDescription)"
+        }
+        sending = false
     }
 }

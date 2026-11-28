@@ -8,10 +8,17 @@ struct YouTubeView: View {
         case home = "Home"
         case subscriptions = "Subscriptions"
         case history = "History"
+        case later = "Watch later"
         var id: String { rawValue }
     }
 
     @State private var section: FeedSection = .home
+    /// The section Watch later goes back to.
+    @State private var lastMain: FeedSection = .home
+    /// Filter by channel: any channel you're subscribed to; shows its latest videos.
+    @State private var channelFilter: YTChannel?
+    @State private var subscribed: [YTChannel] = []
+    @State private var channels: [String] = []
     @State private var query = ""
     @State private var searching = false
     @State private var signedIn = false
@@ -47,10 +54,15 @@ struct YouTubeView: View {
                     .id(query)
             } else {
                 HStack {
-                    Picker("Section", selection: $section) {
-                        ForEach(FeedSection.allCases) { Text($0.rawValue).tag($0) }
+                    // Home, Subscriptions, History; Watch later sits on the row below
+                    Picker("Section", selection: Binding(
+                        get: { section == .later ? lastMain : section },
+                        set: { section = $0; lastMain = $0; channelFilter = nil }
+                    )) {
+                        ForEach([FeedSection.home, .subscriptions, .history]) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    .opacity(section == .later ? 0.55 : 1)
                     if signedIn {
                         Menu {
                             if let account { Text(account.name) }
@@ -60,6 +72,53 @@ struct YouTubeView: View {
                                 .font(.title3)
                         }
                         .accessibilityLabel("YouTube account")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                // Filter by channel (the channels in the list) and Watch later
+                HStack(spacing: 10) {
+                    Menu {
+                        Button {
+                            channelFilter = nil
+                        } label: {
+                            Label("All channels", systemImage: channelFilter == nil ? "checkmark" : "")
+                        }
+                        ForEach(subscribed) { channel in
+                            Button {
+                                channelFilter = channel
+                            } label: {
+                                Label(channel.name, systemImage: channelFilter?.id == channel.id ? "checkmark" : "")
+                            }
+                        }
+                    } label: {
+                        Label(channelFilter?.name ?? "Filter by channel", systemImage: "line.3.horizontal.decrease.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(channelFilter == nil ? Color(uiColor: .secondarySystemBackground) : Color.white, in: Capsule())
+                            .foregroundStyle(channelFilter == nil ? Color.primary : Color.black)
+                    }
+                    .disabled(subscribed.isEmpty)
+                    if channelFilter != nil {
+                        Button { channelFilter = nil } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .accessibilityLabel("Show all channels")
+                    }
+                    Spacer()
+                    if signedIn {
+                        Button {
+                            section = section == .later ? lastMain : .later
+                            channelFilter = nil
+                        } label: {
+                            Label("Watch later", systemImage: "clock")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(section == .later ? Color.white : Color(uiColor: .secondarySystemBackground), in: Capsule())
+                                .foregroundStyle(section == .later ? Color.black : Color.primary)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -78,21 +137,34 @@ struct YouTubeView: View {
                     .padding(.horizontal, 16)
                 }
 
+                if let channel = channelFilter {
+                    YouTubeChannelView(id: channel.id, play: { YouTubePlayerHost.shared.play($0) }, compact: true)
+                        .id("filter-\(channel.id)")
+                } else {
                 switch section {
                 case .home:
-                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }).id("home-\(reloadToken)")
+                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("home-\(reloadToken)")
                 case .subscriptions:
                     if signedIn {
-                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }).id("subs-\(reloadToken)")
+                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("subs-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see new videos from your subscriptions.")
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
+                case .later:
+                    if signedIn {
+                        YouTubeFeedList(kind: .later, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("later-\(reloadToken)")
+                    } else {
+                        Spacer()
+                        Text("Sign in to see your Watch later list.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
                 case .history:
                     if signedIn {
-                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }).id("history-\(reloadToken)")
+                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("history-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see the videos you've watched.")
@@ -100,9 +172,13 @@ struct YouTubeView: View {
                         Spacer()
                     }
                 }
+                }
             }
         }
-        .task { await refreshAccount() }
+        .task {
+            await refreshAccount()
+            if signedIn { subscribed = (try? await YouTubeAPI.shared.subscribedChannels()) ?? [] }
+        }
         .fullScreenCover(isPresented: $host.expanded) { ExpandedYouTubePlayer() }
         .sheet(isPresented: $showSignIn) {
             YouTubeSignInSheet {
@@ -136,9 +212,12 @@ struct YouTubeView: View {
 /// Home, Subscriptions or History, loading more as you scroll. Subscriptions and History are
 /// grouped by day.
 private struct YouTubeFeedList: View {
-    enum Kind { case home, subscriptions, history }
+    enum Kind { case home, subscriptions, history, later }
     let kind: Kind
     let play: (YTVideo) -> Void
+    /// Only this channel's videos (Filter by channel); the list's channels go back up for the menu.
+    var filter: String? = nil
+    @Binding var channels: [String]
 
     @State private var videos: [YTVideo] = []
     @State private var next: String?
@@ -149,13 +228,13 @@ private struct YouTubeFeedList: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                if kind != .home {
+                if kind == .subscriptions || kind == .history {
                     ForEach(groups) { group in
                         Text(group.label).font(.title3.weight(.bold)).padding(.horizontal, 16)
                         ForEach(group.videos) { video in row(video) }
                     }
                 } else {
-                    ForEach(videos) { video in row(video) }
+                    ForEach(shown) { video in row(video) }
                 }
                 if let error {
                     VStack(spacing: 8) {
@@ -174,6 +253,8 @@ private struct YouTubeFeedList: View {
             }
             .padding(.vertical, 8)
         }
+        .onAppear { reportChannels() }
+        .onChange(of: videos.count) { _ in reportChannels() }
         .refreshable {
             videos = []
             next = nil
@@ -183,7 +264,27 @@ private struct YouTubeFeedList: View {
     }
 
     private func row(_ video: YTVideo) -> some View {
-        YouTubeVideoRow(video: video, play: play, onRemove: kind == .history && video.remove != nil ? { remove(video) } : nil)
+        switch kind {
+        case .history:
+            return YouTubeVideoRow(video: video, play: play, onRemove: video.remove != nil ? { remove(video) } : nil)
+        case .later:
+            return YouTubeVideoRow(video: video, play: play, onRemove: { removeFromLater(video) },
+                                   removeLabel: "Remove from Watch later")
+        default:
+            return YouTubeVideoRow(video: video, play: play)
+        }
+    }
+
+    /// Watch later: take a video off the list.
+    private func removeFromLater(_ video: YTVideo) {
+        Task {
+            do {
+                try await YouTubeAPI.shared.editWatchLater(video.id, add: false)
+                videos.removeAll { $0.id == video.id }
+            } catch {
+                self.error = "Couldn't remove it: \(error.localizedDescription)"
+            }
+        }
     }
 
     /// History: take a video out of your YouTube watch history.
@@ -200,6 +301,17 @@ private struct YouTubeFeedList: View {
         }
     }
 
+    private var shown: [YTVideo] {
+        guard let filter else { return videos }
+        return videos.filter { $0.channel == filter }
+    }
+
+    private func reportChannels() {
+        var seen = Set<String>()
+        channels = videos.map(\.channel).filter { !$0.isEmpty && seen.insert($0).inserted }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     private struct DayGroup: Identifiable {
         let label: String
         var videos: [YTVideo]
@@ -208,7 +320,7 @@ private struct YouTubeFeedList: View {
 
     private var groups: [DayGroup] {
         var result: [DayGroup] = []
-        for video in videos {
+        for video in shown {
             let label = kind == .history
                 ? ((video.day?.isEmpty == false) ? video.day! : "Earlier")
                 : video.live ? "Live now" : YouTubeDays.label(video.published)
@@ -232,6 +344,7 @@ private struct YouTubeFeedList: View {
             case .home: page = try await YouTubeAPI.shared.home(next: more ? next : nil)
             case .subscriptions: page = try await YouTubeAPI.shared.subscriptions(next: more ? next : nil)
             case .history: page = try await YouTubeAPI.shared.history(next: more ? next : nil)
+            case .later: page = try await YouTubeAPI.shared.watchLater(next: more ? next : nil)
             }
             let seen = Set(videos.map(\.id))
             videos += page.videos.filter { !seen.contains($0.id) }
@@ -242,6 +355,7 @@ private struct YouTubeFeedList: View {
                 case .home: error = "YouTube didn't recommend any videos."
                 case .subscriptions: error = "No new videos."
                 case .history: error = "Your watch history is empty (or turned off in your YouTube account)."
+                case .later: error = "Nothing in Watch later. Save videos with ⋯ → Save to Watch later."
                 }
             }
         } catch {
@@ -301,6 +415,8 @@ private struct YouTubeSearchResults: View {
 struct YouTubeChannelView: View {
     let id: String
     let play: (YTVideo) -> Void
+    /// Inside the YouTube tab (Filter by channel): no navigation title.
+    var compact = false
     @State private var page: YTChannelPage?
     @State private var error: String?
 
@@ -326,7 +442,7 @@ struct YouTubeChannelView: View {
             }
             .padding(.vertical, 8)
         }
-        .navigationTitle(page?.name ?? "")
+        .navigationTitle(compact ? "" : (page?.name ?? ""))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             do { page = try await YouTubeAPI.shared.channel(id) } catch { self.error = error.localizedDescription }
@@ -338,8 +454,10 @@ private struct YouTubeVideoRow: View {
     let video: YTVideo
     let play: (YTVideo) -> Void
     var showChannel = true
-    /// History: Remove from watch history.
+    /// History or Watch later: take it off the list.
     var onRemove: (() -> Void)? = nil
+    var removeLabel = "Remove from watch history"
+    @State private var savedForLater = false
     @ObservedObject private var host = YouTubePlayerHost.shared
 
     var body: some View {
@@ -397,11 +515,24 @@ private struct YouTubeVideoRow: View {
                     Text([video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                if let onRemove {
+                if !video.live || onRemove != nil {
                     Spacer(minLength: 4)
                     Menu {
-                        Button(role: .destructive, action: onRemove) {
-                            Label("Remove from watch history", systemImage: "trash")
+                        if !video.live && removeLabel != "Remove from Watch later" {
+                            Button {
+                                Task {
+                                    if (try? await YouTubeAPI.shared.editWatchLater(video.id, add: true)) != nil { savedForLater = true }
+                                }
+                            } label: {
+                                Label(savedForLater ? "Saved to Watch later" : "Save to Watch later",
+                                      systemImage: savedForLater ? "checkmark" : "clock")
+                            }
+                            .disabled(savedForLater)
+                        }
+                        if let onRemove {
+                            Button(role: .destructive, action: onRemove) {
+                                Label(removeLabel, systemImage: "trash")
+                            }
                         }
                     } label: {
                         Image(systemName: "ellipsis")
