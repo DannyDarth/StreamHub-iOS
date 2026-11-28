@@ -309,6 +309,13 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         }
         if (ad) return;
         const want = Boolean(s.sound) && !s.hold;
+        // a Short loaded ahead stays out of YouTube's sound setting: YouTube shares it between
+        // its pages, so muting one through the player muted the Short on screen as well. It's
+        // paused, and only its video is muted.
+        if (s.hold) {
+          if (!v.muted) v.muted = true;
+          return;
+        }
         try {
           if (p && typeof p.isMuted === "function") {
             if (want && (p.isMuted() || v.muted)) {
