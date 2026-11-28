@@ -15,7 +15,9 @@ struct YouTubeView: View {
     @State private var section: FeedSection = .home
     /// The section Watch later goes back to.
     @State private var lastMain: FeedSection = .home
-    @State private var channelFilter: String?
+    /// Filter by channel: any channel you're subscribed to; shows its latest videos.
+    @State private var channelFilter: YTChannel?
+    @State private var subscribed: [YTChannel] = []
     @State private var channels: [String] = []
     @State private var query = ""
     @State private var searching = false
@@ -82,22 +84,22 @@ struct YouTubeView: View {
                         } label: {
                             Label("All channels", systemImage: channelFilter == nil ? "checkmark" : "")
                         }
-                        ForEach(channels, id: \.self) { name in
+                        ForEach(subscribed) { channel in
                             Button {
-                                channelFilter = name
+                                channelFilter = channel
                             } label: {
-                                Label(name, systemImage: channelFilter == name ? "checkmark" : "")
+                                Label(channel.name, systemImage: channelFilter?.id == channel.id ? "checkmark" : "")
                             }
                         }
                     } label: {
-                        Label(channelFilter ?? "Filter by channel", systemImage: "line.3.horizontal.decrease.circle")
+                        Label(channelFilter?.name ?? "Filter by channel", systemImage: "line.3.horizontal.decrease.circle")
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
                             .padding(.horizontal, 12).padding(.vertical, 7)
                             .background(channelFilter == nil ? Color(uiColor: .secondarySystemBackground) : Color.white, in: Capsule())
                             .foregroundStyle(channelFilter == nil ? Color.primary : Color.black)
                     }
-                    .disabled(channels.isEmpty)
+                    .disabled(subscribed.isEmpty)
                     if channelFilter != nil {
                         Button { channelFilter = nil } label: {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -135,12 +137,16 @@ struct YouTubeView: View {
                     .padding(.horizontal, 16)
                 }
 
+                if let channel = channelFilter {
+                    YouTubeChannelView(id: channel.id, play: { YouTubePlayerHost.shared.play($0) }, compact: true)
+                        .id("filter-\(channel.id)")
+                } else {
                 switch section {
                 case .home:
-                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("home-\(reloadToken)")
+                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("home-\(reloadToken)")
                 case .subscriptions:
                     if signedIn {
-                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("subs-\(reloadToken)")
+                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("subs-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see new videos from your subscriptions.")
@@ -149,7 +155,7 @@ struct YouTubeView: View {
                     }
                 case .later:
                     if signedIn {
-                        YouTubeFeedList(kind: .later, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("later-\(reloadToken)")
+                        YouTubeFeedList(kind: .later, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("later-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see your Watch later list.")
@@ -158,7 +164,7 @@ struct YouTubeView: View {
                     }
                 case .history:
                     if signedIn {
-                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("history-\(reloadToken)")
+                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("history-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see the videos you've watched.")
@@ -166,9 +172,13 @@ struct YouTubeView: View {
                         Spacer()
                     }
                 }
+                }
             }
         }
-        .task { await refreshAccount() }
+        .task {
+            await refreshAccount()
+            if signedIn { subscribed = (try? await YouTubeAPI.shared.subscribedChannels()) ?? [] }
+        }
         .fullScreenCover(isPresented: $host.expanded) { ExpandedYouTubePlayer() }
         .sheet(isPresented: $showSignIn) {
             YouTubeSignInSheet {
@@ -405,6 +415,8 @@ private struct YouTubeSearchResults: View {
 struct YouTubeChannelView: View {
     let id: String
     let play: (YTVideo) -> Void
+    /// Inside the YouTube tab (Filter by channel): no navigation title.
+    var compact = false
     @State private var page: YTChannelPage?
     @State private var error: String?
 
@@ -430,7 +442,7 @@ struct YouTubeChannelView: View {
             }
             .padding(.vertical, 8)
         }
-        .navigationTitle(page?.name ?? "")
+        .navigationTitle(compact ? "" : (page?.name ?? ""))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             do { page = try await YouTubeAPI.shared.channel(id) } catch { self.error = error.localizedDescription }

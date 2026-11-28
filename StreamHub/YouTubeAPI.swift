@@ -52,6 +52,8 @@ struct YTComment: Codable, Identifiable, Hashable {
     let likes: String
     let replies: String
     let pinned: Bool
+    /// YouTube's parameters for replying (nil: replies are off).
+    let reply: String?
 }
 
 struct YTComments: Codable {
@@ -59,6 +61,8 @@ struct YTComments: Codable {
     let next: String?
     let count: String
     let off: Bool
+    /// YouTube's parameters for a new comment on the video (nil: you can't comment).
+    let create: String?
 }
 
 struct YTAccount: Codable {
@@ -201,6 +205,22 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
         _ = try await run(Self.watchLaterEditBody, ["videoId": videoId, "add": add], as: Bool.self)
     }
 
+    /// Post a comment (`reply` false, with the video's params) or a reply (with the comment's), as
+    /// your signed-in YouTube account.
+    func postComment(params: String, text: String, reply: Bool) async throws {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.count <= 10_000 else { throw YouTubeError.failed("Write something first.") }
+        guard params.count < 4000, params.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else {
+            throw YouTubeError.failed("Can't comment here.")
+        }
+        _ = try await run(Self.postCommentBody, ["params": params, "commentText": text, "reply": reply], as: Bool.self)
+    }
+
+    /// Every channel you're subscribed to, by name.
+    func subscribedChannels() async throws -> [YTChannel] {
+        try await run(Self.subscribedBody, as: [YTChannel].self)
+    }
+
     /// A video's comments, a page at a time (top comments first).
     func comments(_ videoId: String, next: String? = nil) async throws -> YTComments {
         guard videoId.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
@@ -332,7 +352,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
             avatar: firstThumb(meta.image || null),
           });
         }
-        const c = n.channelRenderer;
+        const c = n.channelRenderer || n.gridChannelRenderer;
         if (c && c.channelId && !seenC.has(c.channelId)) {
           seenC.add(c.channelId);
           channels.push({ id: c.channelId, name: text(c.title), avatar: firstThumb(c.thumbnail),
@@ -439,6 +459,33 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     return { status: 200, items: true };
     """#
 
+    private static let postCommentBody = #"""
+    const r = reply
+      ? await api("comment/create_comment_reply", { createReplyParams: params, commentText }, true)
+      : await api("comment/create_comment", { createCommentParams: params, commentText }, true);
+    if (r.status !== 200) return { status: r.status };
+    const flat = JSON.stringify(r.data);
+    if (/"status":"STATUS_SUCCEEDED"|createCommentAction|createCommentReplyAction|commentEntityPayload/.test(flat)) return { status: 200, items: true };
+    const why = (flat.match(/"(?:errorMessage|text)":"([^"]{3,200})"/) || [])[1];
+    return { status: 500, error: why || "YouTube didn't post it." };
+    """#
+
+    private static let subscribedBody = #"""
+    let r = await api("browse", { browseId: "FEchannels" }, true);
+    if (r.status !== 200) return { status: r.status };
+    const channels = [];
+    const seen = new Set();
+    for (let page = 0; page < 15; page++) {
+      for (const c of collect(r.data).channels) if (!seen.has(c.id)) { seen.add(c.id); channels.push(c); }
+      const token = nextPage(r.data);
+      if (!token) break;
+      r = await api("browse", { continuation: token }, true);
+      if (r.status !== 200) break;
+    }
+    channels.sort((a, b) => a.name.localeCompare(b.name));
+    return { status: 200, items: channels };
+    """#
+
     private static let watchLaterBody = #"""
     const r = await api("browse", token ? { continuation: token } : { browseId: "VLWL" }, true);
     if (r.status !== 200) return { status: r.status };
@@ -458,6 +505,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const signedIn = Boolean(cookie("SAPISID") || cookie("__Secure-3PAPISID"));
     let token = pageToken;
     let count = "";
+    let create = null;
     if (!token) {
       const first = await api("next", { videoId: videoId }, signedIn);
       if (first.status !== 200) return { status: first.status };
@@ -478,19 +526,20 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
         return null;
       };
       token = find(first.data);
-      if (!token) return { status: 200, items: { comments: [], next: null, count: "", off: true } };
+      if (!token) return { status: 200, items: { comments: [], next: null, count: "", off: true, create: null } };
     }
     const r = await api("next", { continuation: token }, signedIn);
     if (r.status !== 200) return { status: r.status };
     const comments = [];
-    // current format: the comment's text and author are in frameworkUpdates
+    // current format: each comment's view model points at its text and author (commentKey) and
+    // at its toolbar (toolbarSurfaceKey, which holds the reply command) in frameworkUpdates
     const mutations = (((r.data.frameworkUpdates || {}).entityBatchUpdate || {}).mutations) || [];
-    for (const m of mutations) {
-      const p = m.payload && m.payload.commentEntityPayload;
-      if (!p) continue;
+    const ents = {};
+    for (const m of mutations) if (m.entityKey && m.payload) ents[m.entityKey] = m.payload;
+    const toComment = (p, replySource) => {
       const props = p.properties || {}, author = p.author || {}, bar = p.toolbar || {};
-      comments.push({
-        id: props.commentId || m.entityKey || String(comments.length),
+      return {
+        id: props.commentId || String(comments.length),
         author: author.displayName || "",
         avatar: author.avatarThumbnailUrl || null,
         text: (props.content && props.content.content) || "",
@@ -498,7 +547,28 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
         likes: bar.likeCountNotliked || bar.likeCountA11y || "",
         replies: bar.replyCount || "",
         pinned: false,
-      });
+        reply: (JSON.stringify(replySource || {}).match(/"createReplyParams":"([^"]+)"/) || [])[1] || null,
+      };
+    };
+    const views = [];
+    const findViews = (n) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(findViews); return; }
+      if (n.commentKey && typeof n.commentKey === "string") { views.push(n); return; }
+      for (const k in n) if (k !== "frameworkUpdates") findViews(n[k]);
+    };
+    findViews(r.data.onResponseReceivedEndpoints || []);
+    for (const v of views) {
+      const p = (ents[v.commentKey] || {}).commentEntityPayload;
+      if (!p) continue;
+      const c = toComment(p, ents[v.toolbarSurfaceKey] || ents[v.commentSurfaceKey]);
+      if (!comments.some((x) => x.id === c.id)) comments.push(c);
+    }
+    if (!views.length) {
+      for (const m of mutations) {
+        const p = m.payload && m.payload.commentEntityPayload;
+        if (p) comments.push(toComment(p, null));
+      }
     }
     // older format
     const walk = (n) => {
@@ -510,11 +580,15 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
           id: c.commentId, author: text(c.authorText), avatar: firstThumb(c.authorThumbnail),
           text: text(c.contentText), published: text(c.publishedTimeText), likes: text(c.voteCount),
           replies: String(c.replyCount || ""), pinned: Boolean(c.pinnedCommentBadge),
+          reply: (JSON.stringify(n).match(/"createReplyParams":"([^"]+)"/) || [])[1] || null,
         });
         return;
       }
       const h = n.commentsHeaderRenderer;
-      if (h) count = text(h.countText) || text(h.commentsCount) || count;
+      if (h) {
+        count = text(h.countText) || text(h.commentsCount) || count;
+        create = (JSON.stringify(h).match(/"createCommentParams":"([^"]+)"/) || [])[1] || create;
+      }
       for (const k in n) if (k !== "frameworkUpdates") walk(n[k]);
     };
     walk(r.data.onResponseReceivedEndpoints || r.data);
@@ -526,7 +600,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
       const m = last && last.continuationItemRenderer && JSON.stringify(last.continuationItemRenderer).match(/"token":"([^"]+)"/);
       if (m) next = m[1];
     }
-    return { status: 200, items: { comments, next, count, off: false } };
+    return { status: 200, items: { comments, next, count, off: false, create } };
     """#
 
     private static let homeBody = #"""
