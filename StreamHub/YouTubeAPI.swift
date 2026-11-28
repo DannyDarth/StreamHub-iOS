@@ -43,6 +43,24 @@ struct YTChannelPage: Codable {
     let videos: [YTVideo]
 }
 
+struct YTComment: Codable, Identifiable, Hashable {
+    let id: String
+    let author: String
+    let avatar: String?
+    let text: String
+    let published: String
+    let likes: String
+    let replies: String
+    let pinned: Bool
+}
+
+struct YTComments: Codable {
+    let comments: [YTComment]
+    let next: String?
+    let count: String
+    let off: Bool
+}
+
 struct YTAccount: Codable {
     let name: String
     let avatar: String?
@@ -168,6 +186,15 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
             throw YouTubeError.failed("Can't remove this video.")
         }
         _ = try await run(Self.historyRemoveBody, ["token": token], as: Bool.self)
+    }
+
+    /// A video's comments, a page at a time (top comments first).
+    func comments(_ videoId: String, next: String? = nil) async throws -> YTComments {
+        guard videoId.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
+            throw YouTubeError.failed("Not a YouTube video.")
+        }
+        return try await run(Self.commentsBody, ["videoId": videoId, "pageToken": next.map { $0 as Any } ?? NSNull()],
+                             as: YTComments.self)
     }
 
     func search(_ query: String) async throws -> YTSearch {
@@ -397,6 +424,81 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const r = await api("feedback", { feedbackTokens: [token], isFeedbackTokenUnencrypted: false, shouldMerge: false }, true);
     if (r.status !== 200) return { status: r.status };
     return { status: 200, items: true };
+    """#
+
+    private static let commentsBody = #"""
+    const signedIn = Boolean(cookie("SAPISID") || cookie("__Secure-3PAPISID"));
+    let token = pageToken;
+    let count = "";
+    if (!token) {
+      const first = await api("next", { videoId: videoId }, signedIn);
+      if (first.status !== 200) return { status: first.status };
+      // the comments section's first page token (in the watch page, or its comments panel)
+      const find = (n) => {
+        if (!n || typeof n !== "object") return null;
+        const s = n.itemSectionRenderer;
+        if (s && /comment/i.test(String(s.sectionIdentifier || s.targetId || ""))) {
+          const m = JSON.stringify(s).match(/"continuationCommand":\{"token":"([^"]+)"/);
+          if (m) return m[1];
+        }
+        const p = n.engagementPanelSectionListRenderer;
+        if (p && /comments/i.test(String(p.panelIdentifier || p.targetId || ""))) {
+          const m = JSON.stringify(p).match(/"continuationCommand":\{"token":"([^"]+)"/);
+          if (m) return m[1];
+        }
+        for (const k in n) { const t = find(n[k]); if (t) return t; }
+        return null;
+      };
+      token = find(first.data);
+      if (!token) return { status: 200, items: { comments: [], next: null, count: "", off: true } };
+    }
+    const r = await api("next", { continuation: token }, signedIn);
+    if (r.status !== 200) return { status: r.status };
+    const comments = [];
+    // current format: the comment's text and author are in frameworkUpdates
+    const mutations = (((r.data.frameworkUpdates || {}).entityBatchUpdate || {}).mutations) || [];
+    for (const m of mutations) {
+      const p = m.payload && m.payload.commentEntityPayload;
+      if (!p) continue;
+      const props = p.properties || {}, author = p.author || {}, bar = p.toolbar || {};
+      comments.push({
+        id: props.commentId || m.entityKey || String(comments.length),
+        author: author.displayName || "",
+        avatar: author.avatarThumbnailUrl || null,
+        text: (props.content && props.content.content) || "",
+        published: props.publishedTime || "",
+        likes: bar.likeCountNotliked || bar.likeCountA11y || "",
+        replies: bar.replyCount || "",
+        pinned: false,
+      });
+    }
+    // older format
+    const walk = (n) => {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      const c = n.commentRenderer;
+      if (c && c.commentId && !comments.some((x) => x.id === c.commentId)) {
+        comments.push({
+          id: c.commentId, author: text(c.authorText), avatar: firstThumb(c.authorThumbnail),
+          text: text(c.contentText), published: text(c.publishedTimeText), likes: text(c.voteCount),
+          replies: String(c.replyCount || ""), pinned: Boolean(c.pinnedCommentBadge),
+        });
+        return;
+      }
+      const h = n.commentsHeaderRenderer;
+      if (h) count = text(h.countText) || text(h.commentsCount) || count;
+      for (const k in n) if (k !== "frameworkUpdates") walk(n[k]);
+    };
+    walk(r.data.onResponseReceivedEndpoints || r.data);
+    // the next page: the continuation at the end of the list (not a thread's replies)
+    let next = null;
+    for (const e of r.data.onResponseReceivedEndpoints || []) {
+      const items = ((e.reloadContinuationItemsCommand || e.appendContinuationItemsAction || {}).continuationItems) || [];
+      const last = items[items.length - 1];
+      const m = last && last.continuationItemRenderer && JSON.stringify(last.continuationItemRenderer).match(/"token":"([^"]+)"/);
+      if (m) next = m[1];
+    }
+    return { status: 200, items: { comments, next, count, off: false } };
     """#
 
     private static let homeBody = #"""

@@ -17,6 +17,7 @@ struct SettingsView: View {
 
     @AppStorage(UpdateChecker.enabledKey) private var checkForUpdates = true
     @ObservedObject private var updates = UpdateChecker.shared
+    @AppStorage("streamhub.ytComments") private var showYouTubeComments = true
     @State private var sponsorBlock = SponsorBlock.actions
     @State private var signOutConfirm = false
     @State private var signedOut = false
@@ -52,6 +53,13 @@ struct SettingsView: View {
                 Text("Sign-ins")
             } footer: {
                 Text("Your sign-ins are kept on this iPhone when you install a new version, so you don't have to sign in (and do two-factor) again. They're saved in the iPhone's Keychain and never leave the device.")
+            }
+            Section {
+                Toggle("Show comments", isOn: $showYouTubeComments)
+            } header: {
+                Text("YouTube")
+            } footer: {
+                Text("A video's comments show under the bigger player (the speech-bubble button under a playing video opens it).")
             }
             Section {
                 ForEach(SponsorBlock.categories) { category in
