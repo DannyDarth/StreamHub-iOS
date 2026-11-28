@@ -673,6 +673,8 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const add = (cmd) => {
       const e = cmd && cmd.reelWatchEndpoint;
       if (!e || typeof e.videoId !== "string" || !/^[A-Za-z0-9_-]{11}$/.test(e.videoId) || seen.has(e.videoId)) return;
+      // Shorts ads come in the same list, marked with adClientParams (what ad blockers prune): left out
+      if (e.adClientParams || Object.keys(e).some((k) => /^ad[A-Z]/.test(k)) || (cmd.commandMetadata && /adurl|pagead|googleadservices/.test(JSON.stringify(cmd.commandMetadata)))) return;
       seen.add(e.videoId);
       videos.push({ id: e.videoId, title: "", channel: "", channelId: null, live: false, duration: "", published: "", views: "", avatar: null });
     };
