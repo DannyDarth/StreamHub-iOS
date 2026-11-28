@@ -60,6 +60,13 @@ final class YouTubeFilter: ObservableObject {
         saveChannels()
     }
 
+    /// Whether a channel (from a Short: id when known, and name) is hidden.
+    func isHidden(id: String?, name: String) -> Bool {
+        hiddenChannels.contains { channel in
+            (id != nil && channel.id == id) || (channel.id.hasPrefix("name:") && channel.name.lowercased() == name.lowercased())
+        }
+    }
+
     func unhide(_ channel: HiddenChannel) {
         hiddenChannels.removeAll { $0.id == channel.id }
         saveChannels()
@@ -75,9 +82,12 @@ final class YouTubeFilter: ObservableObject {
     /// Hidden channels and title words (no waiting). `channels: false` on a channel's own page.
     func quick(_ videos: [YTVideo], channels: Bool = true) -> [YTVideo] {
         let ids = Set(hiddenChannels.map(\.id))
+        // hidden from Shorts before the channel's id was known: by name
+        let names = Set(hiddenChannels.filter { $0.id.hasPrefix("name:") }.map { $0.name.lowercased() })
         let ws = words
         return videos.filter { video in
             if channels, let id = video.channelId, ids.contains(id) { return false }
+            if channels, !video.channel.isEmpty, names.contains(video.channel.lowercased()) { return false }
             let title = video.title.lowercased()
             return !ws.contains { title.contains($0) }
         }
