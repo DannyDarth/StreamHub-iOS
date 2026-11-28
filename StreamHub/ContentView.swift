@@ -56,6 +56,14 @@ struct ContentView: View {
                     .accessibilityLabel("Followed channels")
                     .frame(maxWidth: .infinity)
                     }
+
+                    // Settings, on the same line as StreamHub
+                    NavigationLink(destination: SettingsView()) {
+                        Image(systemName: "gearshape")
+                            .font(.title2)
+                            .frame(width: 40, height: 40)
+                    }
+                    .accessibilityLabel("Settings")
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
@@ -98,14 +106,7 @@ struct ContentView: View {
             .sheet(isPresented: $showingFollowed) {
                 NavigationStack { FollowedView() }
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    NavigationLink(destination: SettingsView()) {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityLabel("Settings")
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 

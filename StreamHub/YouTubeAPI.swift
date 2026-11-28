@@ -179,6 +179,11 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
         try await run(Self.homeBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
     }
 
+    /// Shorts, a batch at a time (YouTube's own Shorts sequence; only real Shorts, no ads).
+    func shorts(next: String? = nil) async throws -> YTFeed {
+        try await run(Self.shortsBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
+    }
+
     func subscriptions(next: String? = nil) async throws -> YTFeed {
         try await run(Self.feedBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
     }
@@ -627,6 +632,31 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const r = await api("browse", token ? { continuation: token } : { browseId: "FEwhat_to_watch" }, signedIn);
     if (r.status !== 200) return { status: r.status };
     return { status: 200, items: { videos: collect(r.data).videos, next: nextPage(r.data) } };
+    """#
+
+    private static let shortsBody = #"""
+    const signedIn = Boolean(cookie("SAPISID") || cookie("__Secure-3PAPISID"));
+    const videos = [];
+    const seen = new Set();
+    const add = (cmd) => {
+      const e = cmd && cmd.reelWatchEndpoint;
+      if (!e || typeof e.videoId !== "string" || !/^[A-Za-z0-9_-]{11}$/.test(e.videoId) || seen.has(e.videoId)) return;
+      seen.add(e.videoId);
+      videos.push({ id: e.videoId, title: "", channel: "", channelId: null, live: false, duration: "", published: "", views: "", avatar: null });
+    };
+    let sequence = token;
+    if (!sequence) {
+      const first = await api("reel/reel_item_watch", { params: "CA8%3D", disablePlayerResponse: true, inputType: "REEL_WATCH_INPUT_TYPE_SEEDLESS" }, signedIn);
+      if (first.status !== 200) return { status: first.status === 401 ? 500 : first.status };
+      add(first.data.replacementEndpoint);
+      sequence = first.data.sequenceContinuation;
+      if (!sequence) return { status: 200, items: { videos, next: null } };
+    }
+    const r = await api("reel/reel_watch_sequence", { sequenceParams: sequence }, signedIn);
+    if (r.status !== 200) return { status: r.status === 401 ? 500 : r.status };
+    for (const entry of r.data.entries || []) add(entry.command);
+    const c = r.data.continuationEndpoint && r.data.continuationEndpoint.continuationCommand;
+    return { status: 200, items: { videos, next: c ? c.token : null } };
     """#
 
     private static let searchBody = #"""
