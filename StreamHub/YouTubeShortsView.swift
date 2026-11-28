@@ -63,8 +63,9 @@ struct YouTubeShortsView: View {
                     }
                     .padding()
                 } else {
-                    // the Short before, this one and the next, stacked; dragging moves them
-                    ForEach(max(0, index - 1)...min(shorts.count - 1, index + 1), id: \.self) { i in
+                    // the Short before, this one and the next two, stacked (out of sight but on
+                    // screen for the system, so they load like the one showing); dragging moves them
+                    ForEach(max(0, index - 1)...min(shorts.count - 1, index + 2), id: \.self) { i in
                         page(shorts[i], size: geo.size)
                             .offset(y: CGFloat(i - index) * height + drag)
                     }

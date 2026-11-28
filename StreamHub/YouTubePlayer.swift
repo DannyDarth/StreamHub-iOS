@@ -298,16 +298,25 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
             }
           }
         } catch (e) {}
+        const api = p && typeof p.playVideo === "function";
+        // play and pause through YouTube's player, so it knows (otherwise it can keep a Short
+        // that was loaded ahead muted when it's turned on)
         if (s.hold || s.paused) {
-          if (!v.paused) v.pause();
+          if (!v.paused) { if (api) p.pauseVideo(); else v.pause(); }
         } else if (v.paused && v.readyState > 1 && !ad) {
-          v.play().catch(() => {});
+          if (api) p.playVideo();
+          if (v.paused) v.play().catch(() => {});
         }
         if (ad) return;
         const want = Boolean(s.sound) && !s.hold;
         try {
           if (p && typeof p.isMuted === "function") {
-            if (want && p.isMuted()) { p.unMute(); if (p.setVolume) p.setVolume(100); }
+            if (want && (p.isMuted() || v.muted)) {
+              // YouTube's player can think it's on while the video is muted: off and on again
+              if (!p.isMuted()) p.mute();
+              p.unMute();
+              if (p.setVolume) p.setVolume(100);
+            }
             if (!want && !p.isMuted()) p.mute();
           }
         } catch (e) {}
