@@ -14,6 +14,9 @@ struct YTVideo: Codable, Identifiable, Hashable {
     /// History: the day YouTube files it under, and its "Remove from watch history" token.
     var day: String? = nil
     var remove: String? = nil
+    /// YouTube's "Not interested" and "Don't recommend channel" tokens (recommendations only).
+    var notInterested: String? = nil
+    var dontRecommend: String? = nil
 
     var thumbnail: URL? { URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg") }
 }
@@ -198,6 +201,14 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     }
 
     /// Save a video to Watch later (`add`), or take it off.
+    /// YouTube's "Not interested" / "Don't recommend channel" for a recommended video.
+    func sendFeedback(_ token: String) async throws {
+        guard token.count < 4000, token.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else {
+            throw YouTubeError.failed("Can't do that for this video.")
+        }
+        _ = try await run(Self.historyRemoveBody, ["token": token], as: Bool.self)
+    }
+
     func editWatchLater(_ videoId: String, add: Bool) async throws {
         guard videoId.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
             throw YouTubeError.failed("Not a YouTube video.")
@@ -314,6 +325,12 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
       walk(node);
       return found;
     };
+    // a video's menu: the tokens behind "Not interested" and "Don't recommend channel"
+    const feedbackOf = (node) => {
+      const json = JSON.stringify(node || {});
+      const token = (label) => (json.match(new RegExp(label + '[^]{0,1500}?"feedbackToken":"([^"]+)"')) || [])[1] || null;
+      return { notInterested: token("Not interested"), dontRecommend: token("Don.t recommend channel") };
+    };
     const collect = (root) => {
       const videos = [];
       const channels = [];
@@ -333,6 +350,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
             duration: text(v.lengthText) || "", published: text(v.publishedTimeText),
             views: text(v.shortViewCountText) || text(v.viewCountText) || (text(v.videoInfo).split(/\s*[•·]\s*/)[0] || ""),
             avatar: firstThumb(v.channelThumbnailSupportedRenderers || v.channelThumbnail || null),
+            ...feedbackOf(v),
           });
         }
         const l = n.lockupViewModel;
@@ -350,6 +368,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
             published: (rows[1] || []).find((t) => /ago|Streamed|Scheduled|Premieres/i.test(t)) || "",
             views: (rows[1] || []).find((t) => /view|watching/i.test(t)) || "",
             avatar: firstThumb(meta.image || null),
+            ...feedbackOf(l),
           });
         }
         const c = n.channelRenderer || n.gridChannelRenderer;

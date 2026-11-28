@@ -271,7 +271,7 @@ private struct YouTubeFeedList: View {
             return YouTubeVideoRow(video: video, play: play, onRemove: { removeFromLater(video) },
                                    removeLabel: "Remove from Watch later")
         default:
-            return YouTubeVideoRow(video: video, play: play)
+            return YouTubeVideoRow(video: video, play: play, onHide: { hidden in videos.removeAll { $0.id == hidden.id } })
         }
     }
 
@@ -457,6 +457,8 @@ private struct YouTubeVideoRow: View {
     /// History or Watch later: take it off the list.
     var onRemove: (() -> Void)? = nil
     var removeLabel = "Remove from watch history"
+    /// Not interested / Don't recommend channel worked: take it out of the list.
+    var onHide: ((YTVideo) -> Void)? = nil
     @State private var savedForLater = false
     @ObservedObject private var host = YouTubePlayerHost.shared
 
@@ -515,9 +517,14 @@ private struct YouTubeVideoRow: View {
                     Text([video.views, video.published].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                if !video.live || onRemove != nil {
+                Group {
                     Spacer(minLength: 4)
                     Menu {
+                        if let url = URL(string: "https://www.youtube.com/watch?v=\(video.id)") {
+                            ShareLink(item: url, subject: Text(video.title)) {
+                                Label("Share", systemImage: "square.and.arrow.up")
+                            }
+                        }
                         if !video.live && removeLabel != "Remove from Watch later" {
                             Button {
                                 Task {
@@ -528,6 +535,16 @@ private struct YouTubeVideoRow: View {
                                       systemImage: savedForLater ? "checkmark" : "clock")
                             }
                             .disabled(savedForLater)
+                        }
+                        if let token = video.notInterested {
+                            Button { feedback(token) } label: {
+                                Label("Not interested", systemImage: "nosign")
+                            }
+                        }
+                        if let token = video.dontRecommend {
+                            Button { feedback(token) } label: {
+                                Label("Don't recommend channel", systemImage: "person.crop.circle.badge.minus")
+                            }
                         }
                         if let onRemove {
                             Button(role: .destructive, action: onRemove) {
@@ -543,6 +560,13 @@ private struct YouTubeVideoRow: View {
                     .accessibilityLabel("More")
                 }
             }
+    }
+
+    /// Not interested / Don't recommend channel: tell YouTube, then hide the video here.
+    private func feedback(_ token: String) {
+        Task {
+            if (try? await YouTubeAPI.shared.sendFeedback(token)) != nil { onHide?(video) }
+        }
     }
 
     @ViewBuilder
