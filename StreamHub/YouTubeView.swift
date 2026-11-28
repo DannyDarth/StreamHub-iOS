@@ -13,6 +13,10 @@ struct YouTubeView: View {
     }
 
     @State private var section: FeedSection = .home
+    /// The section Watch later goes back to.
+    @State private var lastMain: FeedSection = .home
+    @State private var channelFilter: String?
+    @State private var channels: [String] = []
     @State private var query = ""
     @State private var searching = false
     @State private var signedIn = false
@@ -48,21 +52,15 @@ struct YouTubeView: View {
                     .id(query)
             } else {
                 HStack {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(FeedSection.allCases) { item in
-                                Button { section = item } label: {
-                                    Text(item.rawValue)
-                                        .font(.subheadline.weight(.semibold))
-                                        .padding(.horizontal, 14).padding(.vertical, 7)
-                                        .background(section == item ? Color.white : Color(uiColor: .secondarySystemBackground),
-                                                    in: Capsule())
-                                        .foregroundStyle(section == item ? Color.black : Color.primary)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
+                    // Home, Subscriptions, History; Watch later sits on the row below
+                    Picker("Section", selection: Binding(
+                        get: { section == .later ? lastMain : section },
+                        set: { section = $0; lastMain = $0; channelFilter = nil }
+                    )) {
+                        ForEach([FeedSection.home, .subscriptions, .history]) { Text($0.rawValue).tag($0) }
                     }
+                    .pickerStyle(.segmented)
+                    .opacity(section == .later ? 0.55 : 1)
                     if signedIn {
                         Menu {
                             if let account { Text(account.name) }
@@ -72,6 +70,53 @@ struct YouTubeView: View {
                                 .font(.title3)
                         }
                         .accessibilityLabel("YouTube account")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                // Filter by channel (the channels in the list) and Watch later
+                HStack(spacing: 10) {
+                    Menu {
+                        Button {
+                            channelFilter = nil
+                        } label: {
+                            Label("All channels", systemImage: channelFilter == nil ? "checkmark" : "")
+                        }
+                        ForEach(channels, id: \.self) { name in
+                            Button {
+                                channelFilter = name
+                            } label: {
+                                Label(name, systemImage: channelFilter == name ? "checkmark" : "")
+                            }
+                        }
+                    } label: {
+                        Label(channelFilter ?? "Filter by channel", systemImage: "line.3.horizontal.decrease.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(channelFilter == nil ? Color(uiColor: .secondarySystemBackground) : Color.white, in: Capsule())
+                            .foregroundStyle(channelFilter == nil ? Color.primary : Color.black)
+                    }
+                    .disabled(channels.isEmpty)
+                    if channelFilter != nil {
+                        Button { channelFilter = nil } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .accessibilityLabel("Show all channels")
+                    }
+                    Spacer()
+                    if signedIn {
+                        Button {
+                            section = section == .later ? lastMain : .later
+                            channelFilter = nil
+                        } label: {
+                            Label("Watch later", systemImage: "clock")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(section == .later ? Color.white : Color(uiColor: .secondarySystemBackground), in: Capsule())
+                                .foregroundStyle(section == .later ? Color.black : Color.primary)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -92,10 +137,10 @@ struct YouTubeView: View {
 
                 switch section {
                 case .home:
-                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }).id("home-\(reloadToken)")
+                    YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("home-\(reloadToken)")
                 case .subscriptions:
                     if signedIn {
-                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }).id("subs-\(reloadToken)")
+                        YouTubeFeedList(kind: .subscriptions, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("subs-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see new videos from your subscriptions.")
@@ -104,7 +149,7 @@ struct YouTubeView: View {
                     }
                 case .later:
                     if signedIn {
-                        YouTubeFeedList(kind: .later, play: { YouTubePlayerHost.shared.play($0) }).id("later-\(reloadToken)")
+                        YouTubeFeedList(kind: .later, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("later-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see your Watch later list.")
@@ -113,7 +158,7 @@ struct YouTubeView: View {
                     }
                 case .history:
                     if signedIn {
-                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }).id("history-\(reloadToken)")
+                        YouTubeFeedList(kind: .history, play: { YouTubePlayerHost.shared.play($0) }, filter: channelFilter, channels: $channels).id("history-\(reloadToken)")
                     } else {
                         Spacer()
                         Text("Sign in to see the videos you've watched.")
@@ -160,6 +205,9 @@ private struct YouTubeFeedList: View {
     enum Kind { case home, subscriptions, history, later }
     let kind: Kind
     let play: (YTVideo) -> Void
+    /// Only this channel's videos (Filter by channel); the list's channels go back up for the menu.
+    var filter: String? = nil
+    @Binding var channels: [String]
 
     @State private var videos: [YTVideo] = []
     @State private var next: String?
@@ -176,7 +224,7 @@ private struct YouTubeFeedList: View {
                         ForEach(group.videos) { video in row(video) }
                     }
                 } else {
-                    ForEach(videos) { video in row(video) }
+                    ForEach(shown) { video in row(video) }
                 }
                 if let error {
                     VStack(spacing: 8) {
@@ -195,6 +243,8 @@ private struct YouTubeFeedList: View {
             }
             .padding(.vertical, 8)
         }
+        .onAppear { reportChannels() }
+        .onChange(of: videos.count) { _ in reportChannels() }
         .refreshable {
             videos = []
             next = nil
@@ -241,6 +291,17 @@ private struct YouTubeFeedList: View {
         }
     }
 
+    private var shown: [YTVideo] {
+        guard let filter else { return videos }
+        return videos.filter { $0.channel == filter }
+    }
+
+    private func reportChannels() {
+        var seen = Set<String>()
+        channels = videos.map(\.channel).filter { !$0.isEmpty && seen.insert($0).inserted }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     private struct DayGroup: Identifiable {
         let label: String
         var videos: [YTVideo]
@@ -249,7 +310,7 @@ private struct YouTubeFeedList: View {
 
     private var groups: [DayGroup] {
         var result: [DayGroup] = []
-        for video in videos {
+        for video in shown {
             let label = kind == .history
                 ? ((video.day?.isEmpty == false) ? video.day! : "Earlier")
                 : video.live ? "Live now" : YouTubeDays.label(video.published)
