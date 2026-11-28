@@ -188,6 +188,19 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
         _ = try await run(Self.historyRemoveBody, ["token": token], as: Bool.self)
     }
 
+    /// Your Watch later list, a page at a time.
+    func watchLater(next: String? = nil) async throws -> YTFeed {
+        try await run(Self.watchLaterBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
+    }
+
+    /// Save a video to Watch later (`add`), or take it off.
+    func editWatchLater(_ videoId: String, add: Bool) async throws {
+        guard videoId.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
+            throw YouTubeError.failed("Not a YouTube video.")
+        }
+        _ = try await run(Self.watchLaterEditBody, ["videoId": videoId, "add": add], as: Bool.self)
+    }
+
     /// A video's comments, a page at a time (top comments first).
     func comments(_ videoId: String, next: String? = nil) async throws -> YTComments {
         guard videoId.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
@@ -289,7 +302,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
       const walk = (n) => {
         if (!n || typeof n !== "object") return;
         if (Array.isArray(n)) { n.forEach(walk); return; }
-        const v = n.videoRenderer || n.gridVideoRenderer || n.compactVideoRenderer;
+        const v = n.videoRenderer || n.gridVideoRenderer || n.compactVideoRenderer || n.playlistVideoRenderer;
         if (v && v.videoId && !seenV.has(v.videoId)) {
           seenV.add(v.videoId);
           const badges = JSON.stringify(v.badges || []) + JSON.stringify(v.thumbnailOverlays || []);
@@ -298,7 +311,7 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
           videos.push({
             id: v.videoId, title: text(v.title), channel: text(owner), channelId: firstId(owner, "UC"), live,
             duration: text(v.lengthText) || "", published: text(v.publishedTimeText),
-            views: text(v.shortViewCountText) || text(v.viewCountText),
+            views: text(v.shortViewCountText) || text(v.viewCountText) || (text(v.videoInfo).split(/\s*[•·]\s*/)[0] || ""),
             avatar: firstThumb(v.channelThumbnailSupportedRenderers || v.channelThumbnail || null),
           });
         }
@@ -424,6 +437,21 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const r = await api("feedback", { feedbackTokens: [token], isFeedbackTokenUnencrypted: false, shouldMerge: false }, true);
     if (r.status !== 200) return { status: r.status };
     return { status: 200, items: true };
+    """#
+
+    private static let watchLaterBody = #"""
+    const r = await api("browse", token ? { continuation: token } : { browseId: "VLWL" }, true);
+    if (r.status !== 200) return { status: r.status };
+    const { videos } = collect(r.data);
+    if (!token && !videos.length && /signInEndpoint|Sign in/.test(JSON.stringify(r.data).slice(0, 20000))) return { status: 401 };
+    return { status: 200, items: { videos, next: nextPage(r.data) } };
+    """#
+
+    private static let watchLaterEditBody = #"""
+    const action = add ? { action: "ACTION_ADD_VIDEO", addedVideoId: videoId } : { action: "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", removedVideoId: videoId };
+    const r = await api("browse/edit_playlist", { playlistId: "WL", actions: [action] }, true);
+    if (r.status !== 200) return { status: r.status };
+    return /STATUS_SUCCEEDED/.test(JSON.stringify(r.data)) ? { status: 200, items: true } : { status: 500, error: "YouTube didn't change Watch later." };
     """#
 
     private static let commentsBody = #"""
