@@ -241,6 +241,24 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         return (result as? Bool) ?? false
     }
 
+    /// Shorts: loop the video and turn its sound on or off (YouTube's page starts it muted).
+    func shortsSetup(muted: Bool) {
+        let script = """
+        let n = 0;
+        const t = setInterval(() => {
+          const v = document.querySelector("video");
+          if (v) { v.loop = true; v.muted = \(muted ? "true" : "false"); }
+          if (++n > 24) clearInterval(t);
+        }, 400);
+        """
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    /// Shorts: pause or play.
+    func togglePause() {
+        webView.evaluateJavaScript("(() => { const v = document.querySelector('video'); if (v) { if (v.paused) v.play(); else v.pause(); } })()", completionHandler: nil)
+    }
+
     /// The Skip button for an offered segment.
     func skipOffered() {
         guard let id = offered?.id,
@@ -609,7 +627,7 @@ struct ExpandedYouTubePlayer: View {
 }
 
 /// The video itself and what StreamHub shows over it (ad being skipped, SponsorBlock skips).
-private struct PlayerStage: View {
+struct PlayerStage: View {
     @ObservedObject var player: YouTubeWebPlayer
     let video: YTVideo
     let mini: Bool

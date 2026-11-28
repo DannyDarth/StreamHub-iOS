@@ -1,15 +1,18 @@
 import SwiftUI
 import WebKit
 
-/// The YouTube tab: your Home and Subscriptions (signed in on Google's own page), search and
+/// The YouTube tab: your Home, Shorts and Subscriptions (signed in on Google's own page), search and
 /// channel pages. Videos play in StreamHub's player with no ads and SponsorBlock.
 struct YouTubeView: View {
     private enum FeedSection: String, CaseIterable, Identifiable {
         case home = "Home"
+        case shorts = "Shorts"
         case subscriptions = "Subscriptions"
         case history = "History"
         case later = "Watch later"
         var id: String { rawValue }
+        /// Short enough for four tabs on an iPhone.
+        var label: String { self == .subscriptions ? "Subs" : rawValue }
     }
 
     @State private var section: FeedSection = .home
@@ -54,12 +57,12 @@ struct YouTubeView: View {
                     .id(query)
             } else {
                 HStack {
-                    // Home, Subscriptions, History; Watch later sits on the row below
+                    // Home, Shorts, Subscriptions, History; Watch later sits on the row below
                     Picker("Section", selection: Binding(
                         get: { section == .later ? lastMain : section },
                         set: { section = $0; lastMain = $0; channelFilter = nil }
                     )) {
-                        ForEach([FeedSection.home, .subscriptions, .history]) { Text($0.rawValue).tag($0) }
+                        ForEach([FeedSection.home, .shorts, .subscriptions, .history]) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .opacity(section == .later ? 0.55 : 1)
@@ -142,6 +145,8 @@ struct YouTubeView: View {
                         .id("filter-\(channel.id)")
                 } else {
                 switch section {
+                case .shorts:
+                    YouTubeShortsView().id("shorts-\(reloadToken)")
                 case .home:
                     YouTubeFeedList(kind: .home, play: { YouTubePlayerHost.shared.play($0) }, channels: $channels).id("home-\(reloadToken)")
                 case .subscriptions:
