@@ -46,6 +46,7 @@ struct YouTubeShortsView: View {
     @State private var drag: CGFloat = 0
     @State private var title = ""
     @State private var paused = false
+    @State private var notice: String?
 
     var body: some View {
         GeometryReader { geo in
@@ -77,6 +78,16 @@ struct YouTubeShortsView: View {
                             .allowsHitTesting(false)
                     }
                     overlay
+                    if let notice {
+                        Text(notice)
+                            .font(.footnote.weight(.semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(.black.opacity(0.75), in: Capsule())
+                            .foregroundStyle(.white)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .padding(.top, 12)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .clipped()
@@ -179,6 +190,10 @@ struct YouTubeShortsView: View {
                             .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel(sound ? "Turn the sound off" : "Turn the sound on")
+                    Button { hideChannel() } label: {
+                        Image(systemName: "eye.slash").frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Hide this channel")
                     if shorts.indices.contains(index), let url = URL(string: "https://www.youtube.com/shorts/\(shorts[index].id)") {
                         ShareLink(item: url) {
                             Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
@@ -194,6 +209,48 @@ struct YouTubeShortsView: View {
         }
     }
 
+    private func flash(_ text: String) {
+        notice = text
+        Task {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            if notice == text { notice = nil }
+        }
+    }
+
+    /// Hide the Short's channel everywhere (Settings → YouTube filters to undo) and move on.
+    private func hideChannel() {
+        guard shorts.indices.contains(index), let player = current else { return }
+        let id = shorts[index].id
+        Task {
+            guard let info = await player.channelInfo() else {
+                flash("Wait a moment: the channel isn't known yet")
+                return
+            }
+            YouTubeFilter.shared.hide(channelId: info.id ?? "name:\(info.name)", name: info.name)
+            flash("\(info.name) hidden")
+            drop(id)
+        }
+    }
+
+    /// Take a Short out of the list and show the next one.
+    private func drop(_ id: String) {
+        guard let at = shorts.firstIndex(where: { $0.id == id }) else { return }
+        shorts.remove(at: at)
+        if index >= shorts.count { index = max(0, shorts.count - 1) }
+        show()
+    }
+
+    /// A Short from a hidden channel (known once its page loads): skip it.
+    private func skipIfHidden(_ id: String) {
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard shorts.indices.contains(index), shorts[index].id == id,
+                  let player = current, let info = await player.channelInfo(),
+                  YouTubeFilter.shared.isHidden(id: info.id, name: info.name) else { return }
+            drop(id)
+        }
+    }
+
     /// Play the Short on screen; get the next two (and keep the one before) ready.
     private func show() {
         guard shorts.indices.contains(index) else { return }
@@ -201,6 +258,7 @@ struct YouTubeShortsView: View {
         paused = false
         let keep = Array(shorts[max(0, index - 1)...min(shorts.count - 1, index + 2)])
         pool.update(keep: keep, active: shorts[index].id, sound: sound)
+        skipIfHidden(shorts[index].id)
         if index >= shorts.count - 4 { Task { await loadMore() } }
     }
 
@@ -215,7 +273,9 @@ struct YouTubeShortsView: View {
             error = nil
             let have = Set(shorts.map(\.id))
             let wasEmpty = shorts.isEmpty
-            shorts += feed.videos.filter { !have.contains($0.id) }
+            // Shorts YouTube labels as made with AI are left out (Settings → YouTube)
+            let ai = await YouTubeFilter.shared.aiLabelled(feed.videos.map(\.id))
+            shorts += feed.videos.filter { !have.contains($0.id) && !ai.contains($0.id) }
             if wasEmpty && !shorts.isEmpty { show() }
         } catch {
             if shorts.isEmpty { self.error = "Couldn't load Shorts: \(error.localizedDescription)" }

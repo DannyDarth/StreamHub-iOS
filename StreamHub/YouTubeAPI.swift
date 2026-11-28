@@ -34,8 +34,8 @@ struct YTFeed: Codable {
 }
 
 struct YTSearch: Codable {
-    let videos: [YTVideo]
-    let channels: [YTChannel]
+    var videos: [YTVideo]
+    var channels: [YTChannel]
 }
 
 struct YTChannelPage: Codable {
@@ -43,7 +43,7 @@ struct YTChannelPage: Codable {
     let name: String
     let description: String
     let avatar: String?
-    let videos: [YTVideo]
+    var videos: [YTVideo]
 }
 
 struct YTComment: Codable, Identifiable, Hashable {
@@ -177,6 +177,11 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
 
     func home(next: String? = nil) async throws -> YTFeed {
         try await run(Self.homeBody, ["token": next.map { $0 as Any } ?? NSNull()], as: YTFeed.self)
+    }
+
+    /// Which of these videos YouTube labels as made with AI (`[id: Bool]`; missing: couldn't tell).
+    func aiLabels(_ ids: [String]) async throws -> [String: Bool] {
+        try await run(Self.aiCheckBody, ["ids": ids], as: [String: Bool].self)
     }
 
     /// Shorts, a batch at a time (YouTube's own Shorts sequence; only real Shorts, no ads).
@@ -634,6 +639,33 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     return { status: 200, items: { videos: collect(r.data).videos, next: nextPage(r.data) } };
     """#
 
+    /// The label is the "How this was made" section pointing at YouTube's altered or synthetic
+    /// content page (help answer 15447836; "Auto-dubbed" points elsewhere). Six at a time.
+    private static let aiCheckBody = #"""
+    const out = {};
+    const list = (Array.isArray(ids) ? ids : []).filter((id) => typeof id === "string" && /^[A-Za-z0-9_-]{11}$/.test(id)).slice(0, 40);
+    const marked = (node) => {
+      if (!node || typeof node !== "object") return false;
+      if (node.howThisWasMadeSectionViewModel) {
+        return /answer\/15447836/.test(JSON.stringify(node.howThisWasMadeSectionViewModel));
+      }
+      for (const k in node) if (marked(node[k])) return true;
+      return false;
+    };
+    let i = 0;
+    const worker = async () => {
+      while (i < list.length) {
+        const id = list[i++];
+        try {
+          const r = await api("next", { videoId: id }, false);
+          if (r.status === 200) out[id] = marked(r.data);
+        } catch (e) {}
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+    return { status: 200, items: out };
+    """#
+
     private static let shortsBody = #"""
     const signedIn = Boolean(cookie("SAPISID") || cookie("__Secure-3PAPISID"));
     const videos = [];
@@ -641,6 +673,8 @@ final class YouTubeAPI: NSObject, WKNavigationDelegate {
     const add = (cmd) => {
       const e = cmd && cmd.reelWatchEndpoint;
       if (!e || typeof e.videoId !== "string" || !/^[A-Za-z0-9_-]{11}$/.test(e.videoId) || seen.has(e.videoId)) return;
+      // Shorts ads come in the same list, marked with adClientParams (what ad blockers prune): left out
+      if (e.adClientParams || Object.keys(e).some((k) => /^ad[A-Z]/.test(k)) || (cmd.commandMetadata && /adurl|pagead|googleadservices/.test(JSON.stringify(cmd.commandMetadata)))) return;
       seen.add(e.videoId);
       videos.push({ id: e.videoId, title: "", channel: "", channelId: null, live: false, duration: "", published: "", views: "", avatar: null });
     };

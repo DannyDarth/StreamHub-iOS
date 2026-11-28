@@ -255,6 +255,26 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
             completionHandler: nil)
     }
 
+    /// The playing video's channel (id when YouTube's page has it, and name), once the page knows it.
+    func channelInfo() async -> (id: String?, name: String)? {
+        let script = """
+        (() => {
+          const p = document.querySelector("#movie_player");
+          let d = null;
+          try { d = p && p.getPlayerResponse && p.getPlayerResponse().videoDetails; } catch (e) {}
+          if (!d && window.ytInitialPlayerResponse) d = window.ytInitialPlayerResponse.videoDetails;
+          if (d && d.author) return JSON.stringify({ id: d.channelId || null, name: d.author });
+          const v = p && p.getVideoData && p.getVideoData();
+          return v && v.author ? JSON.stringify({ id: null, name: v.author }) : null;
+        })()
+        """
+        guard let json = try? await webView.evaluateJavaScript(script) as? String,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = object["name"] as? String, !name.isEmpty else { return nil }
+        return (object["id"] as? String, name)
+    }
+
     /// Shorts: pause or play (tap on the Short).
     func togglePause() {
         webView.evaluateJavaScript(
