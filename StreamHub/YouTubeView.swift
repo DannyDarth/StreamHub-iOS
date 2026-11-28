@@ -229,6 +229,7 @@ private struct YouTubeFeedList: View {
     @State private var loading = false
     @State private var error: String?
     @State private var loaded = false
+    @ObservedObject private var filters = YouTubeFilter.shared
 
     var body: some View {
         ScrollView {
@@ -306,9 +307,14 @@ private struct YouTubeFeedList: View {
         }
     }
 
+    /// Home and Subscriptions are filtered (AI label, words, hidden channels); History and Watch
+    /// later aren't: you picked those.
+    private var filtered: Bool { kind == .home || kind == .subscriptions }
+
     private var shown: [YTVideo] {
-        guard let filter else { return videos }
-        return videos.filter { $0.channel == filter }
+        let list = filtered ? filters.quick(videos) : videos
+        guard let filter else { return list }
+        return list.filter { $0.channel == filter }
     }
 
     private func reportChannels() {
@@ -352,9 +358,17 @@ private struct YouTubeFeedList: View {
             case .later: page = try await YouTubeAPI.shared.watchLater(next: more ? next : nil)
             }
             let seen = Set(videos.map(\.id))
-            videos += page.videos.filter { !seen.contains($0.id) }
+            var fresh = page.videos.filter { !seen.contains($0.id) }
+            if filtered { fresh = await YouTubeFilter.shared.clean(fresh) }
+            videos += fresh
             next = page.next
             loaded = true
+            // a whole page hidden by the filters: get the next one
+            if filtered && fresh.isEmpty && !page.videos.isEmpty && next != nil && videos.count < 8 {
+                loading = false
+                await load(more: true)
+                return
+            }
             if videos.isEmpty {
                 switch kind {
                 case .home: error = "YouTube didn't recommend any videos."
@@ -374,6 +388,7 @@ private struct YouTubeSearchResults: View {
     let query: String
     let play: (YTVideo) -> Void
     @State private var results: YTSearch?
+    @ObservedObject private var filters = YouTubeFilter.shared
     @State private var error: String?
 
     var body: some View {
@@ -399,7 +414,7 @@ private struct YouTubeSearchResults: View {
                             .padding(.horizontal, 16)
                         }
                     }
-                    ForEach(results.videos) { YouTubeVideoRow(video: $0, play: play) }
+                    ForEach(filters.quick(results.videos)) { YouTubeVideoRow(video: $0, play: play) }
                     if results.videos.isEmpty && results.channels.isEmpty {
                         Text("Nothing found.").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding()
                     }
@@ -412,7 +427,13 @@ private struct YouTubeSearchResults: View {
             .padding(.vertical, 8)
         }
         .task {
-            do { results = try await YouTubeAPI.shared.search(query) } catch { self.error = error.localizedDescription }
+            do {
+                var found = try await YouTubeAPI.shared.search(query)
+                let hidden = Set(YouTubeFilter.shared.hiddenChannels.map(\.id))
+                found.channels = found.channels.filter { !hidden.contains($0.id) }
+                found.videos = await YouTubeFilter.shared.clean(found.videos)
+                results = found
+            } catch { self.error = error.localizedDescription }
         }
     }
 }
@@ -450,7 +471,11 @@ struct YouTubeChannelView: View {
         .navigationTitle(compact ? "" : (page?.name ?? ""))
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            do { page = try await YouTubeAPI.shared.channel(id) } catch { self.error = error.localizedDescription }
+            do {
+                var loaded = try await YouTubeAPI.shared.channel(id)
+                loaded.videos = await YouTubeFilter.shared.clean(loaded.videos, channels: false)
+                page = loaded
+            } catch { self.error = error.localizedDescription }
         }
     }
 }
@@ -549,6 +574,14 @@ private struct YouTubeVideoRow: View {
                         if let token = video.dontRecommend {
                             Button { feedback(token) } label: {
                                 Label("Don't recommend channel", systemImage: "person.crop.circle.badge.minus")
+                            }
+                        }
+                        if onRemove == nil, let channelId = video.channelId, !video.channel.isEmpty {
+                            Button(role: .destructive) {
+                                YouTubeFilter.shared.hide(channelId: channelId, name: video.channel)
+                                onHide?(video)
+                            } label: {
+                                Label("Hide channel", systemImage: "eye.slash")
                             }
                         }
                         if let onRemove {

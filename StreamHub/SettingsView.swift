@@ -18,6 +18,9 @@ struct SettingsView: View {
     @AppStorage(UpdateChecker.enabledKey) private var checkForUpdates = true
     @ObservedObject private var updates = UpdateChecker.shared
     @AppStorage("streamhub.ytComments") private var showYouTubeComments = true
+    @AppStorage(YouTubeFilter.hideAIKey) private var hideAI = true
+    @AppStorage(YouTubeFilter.wordsKey) private var hiddenWords = ""
+    @ObservedObject private var filters = YouTubeFilter.shared
     @AppStorage(Service.twitch.key) private var twitchOn = true
     @AppStorage(Service.kick.key) private var kickOn = true
     @AppStorage(Service.youtube.key) private var youtubeOn = true
@@ -92,6 +95,31 @@ struct SettingsView: View {
                 Text("YouTube")
             } footer: {
                 Text("A video's comments show under the bigger player (the speech-bubble button under a playing video opens it).")
+            }
+            Section {
+                Toggle("Hide AI-labelled videos", isOn: $hideAI)
+                    .onChange(of: hideAI) { _ in filters.changed() }
+                TextField("Hide titles with: ai generated, sora", text: $hiddenWords)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: hiddenWords) { _ in filters.changed() }
+                if filters.hiddenChannels.isEmpty {
+                    Text("No hidden channels. Use ⋯ → Hide channel on a video.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(filters.hiddenChannels) { channel in
+                        HStack {
+                            Text(channel.name)
+                            Spacer()
+                            Button("Show again") { filters.unhide(channel) }
+                                .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            } header: {
+                Text("YouTube filters")
+            } footer: {
+                Text("On Home, Shorts, Subscriptions, search and channel pages (not History or Watch later). Videos YouTube labels \"Made with AI\" are hidden; YouTube only labels what creators disclose or it detects, so some AI videos still get through: hide their channel or add title words (separated by commas).")
             }
             Section {
                 ForEach(SponsorBlock.categories) { category in

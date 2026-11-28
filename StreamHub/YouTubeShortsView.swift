@@ -215,7 +215,9 @@ struct YouTubeShortsView: View {
             error = nil
             let have = Set(shorts.map(\.id))
             let wasEmpty = shorts.isEmpty
-            shorts += feed.videos.filter { !have.contains($0.id) }
+            // Shorts YouTube labels as made with AI are left out (Settings → YouTube)
+            let ai = await YouTubeFilter.shared.aiLabelled(feed.videos.map(\.id))
+            shorts += feed.videos.filter { !have.contains($0.id) && !ai.contains($0.id) }
             if wasEmpty && !shorts.isEmpty { show() }
         } catch {
             if shorts.isEmpty { self.error = "Couldn't load Shorts: \(error.localizedDescription)" }
