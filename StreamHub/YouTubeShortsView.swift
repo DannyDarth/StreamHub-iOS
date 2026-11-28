@@ -162,7 +162,18 @@ struct YouTubeShortsView: View {
                 VStack(spacing: 18) {
                     Button {
                         sound.toggle()
-                        current?.shortsState(active: true, sound: sound)
+                        guard let player = current else { return }
+                        if sound {
+                            // a Short that was loaded ahead only takes the sound when it starts
+                            // playing (swiping away and back did it): pause it, then play with sound
+                            player.shortsState(active: false, sound: true)
+                            Task {
+                                try? await Task.sleep(nanoseconds: 250_000_000)
+                                if current === player { player.shortsState(active: true, sound: sound) }
+                            }
+                        } else {
+                            player.shortsState(active: true, sound: false)
+                        }
                     } label: {
                         Image(systemName: sound ? "speaker.wave.2.fill" : "speaker.slash.fill")
                             .frame(width: 44, height: 44)
