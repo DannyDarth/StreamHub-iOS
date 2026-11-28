@@ -154,7 +154,9 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
     /// A segment with a Skip button showing (SponsorBlock "Show a Skip button").
     @Published var offered: (id: String, name: String)?
 
-    init(video: YTVideo) {
+    /// `shorts`: a Short in the Shorts tab (loops; held paused and muted until it's on screen;
+    /// sound set by StreamHub's button, with YouTube's own unmute button hidden).
+    init(video: YTVideo, shorts: Bool = false) {
         self.video = video
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -163,6 +165,10 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.userContentController.addUserScript(
             WKUserScript(source: Self.noAdsScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        if shorts {
+            configuration.userContentController.addUserScript(
+                WKUserScript(source: Self.shortsScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         configuration.userContentController.add(WeakHandler(self), name: "streamhub")
@@ -241,23 +247,57 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         return (result as? Bool) ?? false
     }
 
-    /// Shorts: loop the video and turn its sound on or off (YouTube's page starts it muted).
-    func shortsSetup(muted: Bool) {
-        let script = """
-        let n = 0;
-        const t = setInterval(() => {
-          const v = document.querySelector("video");
-          if (v) { v.loop = true; v.muted = \(muted ? "true" : "false"); }
-          if (++n > 24) clearInterval(t);
-        }, 400);
-        """
-        webView.evaluateJavaScript(script, completionHandler: nil)
+    /// Shorts: on screen (plays, with the sound as `sound` says) or held (paused and muted).
+    func shortsState(active: Bool, sound: Bool, unpause: Bool = false) {
+        let extra = unpause ? ", paused: false" : ""
+        webView.evaluateJavaScript(
+            "window.__sh = Object.assign(window.__sh || {}, { hold: \(!active), sound: \(sound)\(extra) }); window.__shApply && window.__shApply();",
+            completionHandler: nil)
     }
 
-    /// Shorts: pause or play.
+    /// Shorts: pause or play (tap on the Short).
     func togglePause() {
-        webView.evaluateJavaScript("(() => { const v = document.querySelector('video'); if (v) { if (v.paused) v.play(); else v.pause(); } })()", completionHandler: nil)
+        webView.evaluateJavaScript(
+            "window.__sh = window.__sh || {}; window.__sh.paused = !window.__sh.paused; window.__shApply && window.__shApply();",
+            completionHandler: nil)
     }
+
+    /// Kept in step with the Shorts tab: loops, holds it paused and muted until it's on screen,
+    /// and sets the sound through YouTube's player (setting the video's own `muted` isn't enough:
+    /// the player mutes it again). YouTube's unmute button is hidden: StreamHub's does it.
+    static let shortsScript = #"""
+    (() => {
+      window.__sh = Object.assign({ hold: true, sound: false, paused: false }, window.__sh || {});
+      const style = document.createElement("style");
+      style.textContent = '.ytp-unmute, [class*="unmute"], [class*="Unmute"] { display: none !important; }';
+      const addStyle = () => (document.head || document.documentElement).appendChild(style);
+      if (document.documentElement) addStyle(); else document.addEventListener("DOMContentLoaded", addStyle);
+      window.__shApply = () => {
+        const v = document.querySelector("video");
+        const p = document.querySelector(".html5-video-player");
+        if (!v) return;
+        v.loop = true;
+        const s = window.__sh;
+        const ad = p && (p.classList.contains("ad-showing") || p.classList.contains("ad-interrupting"));
+        if (s.hold || s.paused) {
+          if (!v.paused) v.pause();
+        } else if (v.paused && v.readyState > 1 && !ad) {
+          v.play().catch(() => {});
+        }
+        if (ad) return;
+        const want = Boolean(s.sound) && !s.hold;
+        try {
+          if (p && typeof p.isMuted === "function") {
+            if (want && p.isMuted()) { p.unMute(); if (p.setVolume) p.setVolume(100); }
+            if (!want && !p.isMuted()) p.mute();
+          }
+        } catch (e) {}
+        if (v.muted === want) v.muted = !want;
+        if (want && v.volume === 0) v.volume = 1;
+      };
+      setInterval(window.__shApply, 300);
+    })();
+    """#
 
     /// The Skip button for an offered segment.
     func skipOffered() {
@@ -451,7 +491,8 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
           const video = document.querySelector("video");
           const player = document.querySelector(".html5-video-player");
           const ad = player && player.classList.contains("ad-showing");
-          if (video && video.readyState > 0 && !ad && !started) {
+          const held = window.__sh && (window.__sh.hold || window.__sh.paused);
+          if (video && video.readyState > 0 && !ad && !started && !held) {
             if (video.paused) {
               video.play().catch(() => document.querySelector(".ytp-large-play-button, .ytmCuedOverlayPlayButton")?.click());
             } else {

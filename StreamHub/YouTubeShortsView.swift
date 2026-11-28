@@ -2,11 +2,40 @@ import SwiftUI
 import WebKit
 import Combine
 
+/// The Shorts tab's players: the Short on screen plus the one before and the next two, loaded
+/// ahead (held paused and muted) so swiping to the next starts it straight away.
+@MainActor
+final class ShortsPlayers: ObservableObject {
+    @Published private(set) var players: [String: YouTubeWebPlayer] = [:]
+
+    func player(for id: String) -> YouTubeWebPlayer? { players[id] }
+
+    /// Keep players for `keep` (ids, in order), make the missing ones, drop the rest. `active` plays.
+    func update(keep: [YTVideo], active: String, sound: Bool) {
+        let ids = Set(keep.map(\.id))
+        for (id, player) in players where !ids.contains(id) {
+            player.stop()
+            players[id] = nil
+        }
+        for video in keep where players[video.id] == nil {
+            let player = YouTubeWebPlayer(video: video, shorts: true)
+            players[video.id] = player
+            Task { await player.start() }
+        }
+        for (id, player) in players { player.shortsState(active: id == active, sound: sound, unpause: true) }
+    }
+
+    func stopAll() {
+        for player in players.values { player.stop() }
+        players = [:]
+    }
+}
+
 /// YouTube Shorts: one vertical Short at a time, filling the space, looping. Swipe up for the next
 /// one, down for the one before. Each plays in StreamHub's player (no ads, SponsorBlock); they
-/// start muted (tap the sound button to turn it on, and it stays on for the next ones).
+/// start muted (the sound button turns it on, and it stays on for the next ones). Tap to pause.
 struct YouTubeShortsView: View {
-    @ObservedObject private var host = YouTubePlayerHost.shared
+    @StateObject private var pool = ShortsPlayers()
     @AppStorage("streamhub.shorts.sound") private var sound = false
     @State private var shorts: [YTVideo] = []
     @State private var next: String?
@@ -16,6 +45,7 @@ struct YouTubeShortsView: View {
     @State private var index = 0
     @State private var drag: CGFloat = 0
     @State private var title = ""
+    @State private var paused = false
 
     var body: some View {
         GeometryReader { geo in
@@ -35,8 +65,15 @@ struct YouTubeShortsView: View {
                 } else {
                     // the Short before, this one and the next, stacked; dragging moves them
                     ForEach(max(0, index - 1)...min(shorts.count - 1, index + 1), id: \.self) { i in
-                        page(i, size: geo.size)
+                        page(shorts[i], size: geo.size)
                             .offset(y: CGFloat(i - index) * height + drag)
+                    }
+                    if paused {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 54))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .shadow(radius: 4)
+                            .allowsHitTesting(false)
                     }
                     overlay
                 }
@@ -62,24 +99,34 @@ struct YouTubeShortsView: View {
                         }
                     }
             )
-            .onTapGesture { host.player?.togglePause() }
+            .onTapGesture {
+                paused.toggle()
+                current?.togglePause()
+            }
         }
-        .task { if shorts.isEmpty { await loadMore() } }
-        .onChange(of: index) { _ in playCurrent() }
-        .onDisappear { host.close() }
+        .task {
+            // a video playing elsewhere in the YouTube tab stops
+            YouTubePlayerHost.shared.close()
+            if shorts.isEmpty { await loadMore() }
+        }
+        .onChange(of: index) { _ in show() }
+        .onDisappear { pool.stopAll() }
         .onReceive(titlePublisher) { value in
             title = (value ?? "").replacingOccurrences(of: " - YouTube", with: "")
         }
     }
 
+    private var current: YouTubeWebPlayer? {
+        shorts.indices.contains(index) ? pool.player(for: shorts[index].id) : nil
+    }
+
     private var titlePublisher: AnyPublisher<String?, Never> {
-        guard let webView = host.player?.webView else { return Just(nil).eraseToAnyPublisher() }
+        guard let webView = current?.webView else { return Just(nil).eraseToAnyPublisher() }
         return webView.publisher(for: \.title).eraseToAnyPublisher()
     }
 
     @ViewBuilder
-    private func page(_ i: Int, size: CGSize) -> some View {
-        let short = shorts[i]
+    private func page(_ short: YTVideo, size: CGSize) -> some View {
         ZStack {
             Color.black
             AsyncImage(url: URL(string: "https://i.ytimg.com/vi/\(short.id)/oardefault.jpg")) { image in
@@ -87,7 +134,7 @@ struct YouTubeShortsView: View {
             } placeholder: {
                 Color.black
             }
-            if i == index, let player = host.player, host.video?.id == short.id {
+            if let player = pool.player(for: short.id) {
                 PlayerStage(player: player, video: short, mini: false)
                     .allowsHitTesting(false)
             }
@@ -114,37 +161,35 @@ struct YouTubeShortsView: View {
                 VStack(spacing: 18) {
                     Button {
                         sound.toggle()
-                        host.player?.shortsSetup(muted: !sound)
+                        current?.shortsState(active: true, sound: sound)
                     } label: {
                         Image(systemName: sound ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel(sound ? "Turn the sound off" : "Turn the sound on")
                     if shorts.indices.contains(index), let url = URL(string: "https://www.youtube.com/shorts/\(shorts[index].id)") {
-                        ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
-                            .accessibilityLabel("Share")
+                        ShareLink(item: url) {
+                            Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("Share")
                     }
                 }
                 .font(.title2)
                 .shadow(radius: 3)
             }
             .foregroundStyle(.white)
-            .padding(16)
+            .padding(12)
         }
     }
 
-    private func playCurrent() {
+    /// Play the Short on screen; get the next two (and keep the one before) ready.
+    private func show() {
         guard shorts.indices.contains(index) else { return }
         title = ""
-        let short = shorts[index]
-        host.play(short)
-        let muted = !sound
-        let player = host.player
-        // YouTube's page starts it muted: set the sound (and looping) once it's going
-        Task {
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            if host.video?.id == short.id { player?.shortsSetup(muted: muted) }
-        }
-        if index >= shorts.count - 3 { Task { await loadMore() } }
+        paused = false
+        let keep = Array(shorts[max(0, index - 1)...min(shorts.count - 1, index + 2)])
+        pool.update(keep: keep, active: shorts[index].id, sound: sound)
+        if index >= shorts.count - 4 { Task { await loadMore() } }
     }
 
     private func loadMore() async {
@@ -159,7 +204,7 @@ struct YouTubeShortsView: View {
             let have = Set(shorts.map(\.id))
             let wasEmpty = shorts.isEmpty
             shorts += feed.videos.filter { !have.contains($0.id) }
-            if wasEmpty && !shorts.isEmpty { playCurrent() }
+            if wasEmpty && !shorts.isEmpty { show() }
         } catch {
             if shorts.isEmpty { self.error = "Couldn't load Shorts: \(error.localizedDescription)" }
         }
