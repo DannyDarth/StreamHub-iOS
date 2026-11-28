@@ -10,6 +10,8 @@ Native SwiftUI iPhone app for watching Twitch and Kick streams (ad-free on Twitc
 - **YouTube:** Google sign-in (kept across new versions), Home, Subscriptions grouped by day, History (with Remove from watch history), Watch later, filter by any subscribed channel, search and channel pages. Comments under the bigger player, with replies and new comments posted as you. Videos play in place in the list (or in a bigger player) in YouTube's own player with the ads taken out, blocked or covered and skipped, and **SponsorBlock** per category (Settings → YouTube · SponsorBlock)
 - **Crunchyroll:** crunchyroll.com in its own tab with your sign-in and Crunchyroll's player (full screen in iPhone's player); **App** opens an episode in the Crunchyroll app
 - **Sign-ins kept across new versions:** Twitch, Kick and Crunchyroll sign-ins are saved in the Keychain (this device only) and put back after a reinstall; Settings → Sign-ins signs out of everything
+- **Select services to activate** (Settings): turn Twitch, Kick, YouTube or Crunchyroll off to hide it from the tabs, Followed and Settings
+- **YouTube ⋯ menu:** Share, Save to Watch later, Not interested, Don't recommend channel
 - **Update check:** a banner when a new version is out, with the IPA's link or download for your signing service
 
 ## Install

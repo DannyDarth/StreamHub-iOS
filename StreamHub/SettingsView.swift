@@ -18,6 +18,27 @@ struct SettingsView: View {
     @AppStorage(UpdateChecker.enabledKey) private var checkForUpdates = true
     @ObservedObject private var updates = UpdateChecker.shared
     @AppStorage("streamhub.ytComments") private var showYouTubeComments = true
+    @AppStorage(Service.twitch.key) private var twitchOn = true
+    @AppStorage(Service.kick.key) private var kickOn = true
+    @AppStorage(Service.youtube.key) private var youtubeOn = true
+    @AppStorage(Service.crunchyroll.key) private var crunchyrollOn = true
+
+    /// "Twitch, Kick and Crunchyroll": the services that are on.
+    private var activeNames: String {
+        let names = [("Twitch", twitchOn), ("Kick", kickOn), ("YouTube", youtubeOn), ("Crunchyroll", crunchyrollOn)]
+            .filter(\.1).map(\.0)
+        switch names.count {
+        case 0: return "everything"
+        case 1: return names[0]
+        default: return names.dropLast().joined(separator: ", ") + " and " + names.last!
+        }
+    }
+
+    /// One service's switch; the last one on can't be turned off.
+    private func serviceToggle(_ name: String, _ isOn: Binding<Bool>) -> some View {
+        let onCount = [twitchOn, kickOn, youtubeOn, crunchyrollOn].filter { $0 }.count
+        return Toggle(name, isOn: isOn).disabled(isOn.wrappedValue && onCount == 1)
+    }
     @State private var sponsorBlock = SponsorBlock.actions
     @State private var signOutConfirm = false
     @State private var signedOut = false
@@ -39,10 +60,10 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Button("Sign out of Twitch, Kick, YouTube and Crunchyroll", role: .destructive) {
+                Button("Sign out of \(activeNames)", role: .destructive) {
                     signOutConfirm = true
                 }
-                .confirmationDialog("Sign out of Twitch, Kick, YouTube and Crunchyroll?", isPresented: $signOutConfirm,
+                .confirmationDialog("Sign out of \(activeNames)?", isPresented: $signOutConfirm,
                                     titleVisibility: .visible) {
                     Button("Sign out", role: .destructive) { signOut() }
                 }
@@ -54,6 +75,17 @@ struct SettingsView: View {
             } footer: {
                 Text("Your sign-ins are kept on this iPhone when you install a new version, so you don't have to sign in (and do two-factor) again. They're saved in the iPhone's Keychain and never leave the device.")
             }
+            Section {
+                serviceToggle("Twitch", $twitchOn)
+                serviceToggle("Kick", $kickOn)
+                serviceToggle("YouTube", $youtubeOn)
+                serviceToggle("Crunchyroll", $crunchyrollOn)
+            } header: {
+                Text("Select services to activate")
+            } footer: {
+                Text("A service that's off is hidden from the main screen, Followed and these settings until you turn it back on. Its sign-in and settings are kept.")
+            }
+            if youtubeOn {
             Section {
                 Toggle("Show comments", isOn: $showYouTubeComments)
             } header: {
@@ -87,11 +119,14 @@ struct SettingsView: View {
             } footer: {
                 Text("Parts of videos the SponsorBlock community marked. Skip automatically jumps past them; Show a Skip button lets you choose each time. Applies to the next video you open.")
             }
+            }
+            if twitchOn {
             Section("Playback") {
                 Text("Twitch streams play ad-free through StreamHub's ad-free servers. Kick uses its regular player.")
                 Text("Ads never interrupt a Twitch stream: if no ad-free server works, the stream doesn't play. The regular Twitch player is only used if you choose it.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
             }
             Section {
                 Toggle("Check for updates", isOn: $checkForUpdates)

@@ -11,6 +11,22 @@ private enum StreamPlatform: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @State private var platform: StreamPlatform = .kick
+    // Settings → Select services to activate
+    @AppStorage(Service.twitch.key) private var twitchOn = true
+    @AppStorage(Service.kick.key) private var kickOn = true
+    @AppStorage(Service.youtube.key) private var youtubeOn = true
+    @AppStorage(Service.crunchyroll.key) private var crunchyrollOn = true
+
+    private var activePlatforms: [StreamPlatform] {
+        StreamPlatform.allCases.filter { p in
+            switch p {
+            case .twitch: return twitchOn
+            case .kick: return kickOn
+            case .youtube: return youtubeOn
+            case .crunchyroll: return crunchyrollOn
+            }
+        }
+    }
     @State private var showingFollowed = false
     @ObservedObject private var updates = UpdateChecker.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -28,6 +44,7 @@ struct ContentView: View {
                     .minimumScaleFactor(0.75)
                     .frame(maxWidth: .infinity)
 
+                    if twitchOn || kickOn {
                     Button { showingFollowed = true } label: {
                         Text("Followed")
                             .font(.subheadline.weight(.semibold))
@@ -38,6 +55,7 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Followed channels")
                     .frame(maxWidth: .infinity)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
@@ -46,7 +64,7 @@ struct ContentView: View {
                 UpdateBanner(checker: updates)
 
                 Picker("Platform", selection: $platform) {
-                    ForEach(StreamPlatform.allCases) { item in
+                    ForEach(activePlatforms) { item in
                         Text(item.rawValue).tag(item)
                     }
                 }
@@ -70,6 +88,9 @@ struct ContentView: View {
             .onChange(of: scenePhase) { phase in
                 if phase == .active { Task { await updates.check() } }
             }
+            // a service turned off in Settings: show the first one still on
+            .onAppear { keepActivePlatform() }
+            .onChange(of: activePlatforms) { _ in keepActivePlatform() }
             // leaving the YouTube tab stops its video
             .onChange(of: platform) { newValue in
                 if newValue != .youtube { YouTubePlayerHost.shared.close() }
@@ -86,6 +107,10 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func keepActivePlatform() {
+        if !activePlatforms.contains(platform), let first = activePlatforms.first { platform = first }
     }
 }
 
