@@ -5,6 +5,8 @@ import WebKit
 struct FollowedView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedPlatform = 0
+    @AppStorage(Service.twitch.key) private var twitchOn = true
+    @AppStorage(Service.kick.key) private var kickOn = true
     @State private var selectedTwitchChannel: FollowedTwitchChannel?
 
     private var followingURL: URL {
@@ -16,10 +18,11 @@ struct FollowedView: View {
     var body: some View {
         VStack(spacing: 0) {
             Picker("Following platform", selection: $selectedPlatform) {
-                Text("Twitch").tag(0)
-                Text("Kick").tag(1)
+                if twitchOn { Text("Twitch").tag(0) }
+                if kickOn { Text("Kick").tag(1) }
             }
             .pickerStyle(.segmented)
+            .onAppear { if !twitchOn { selectedPlatform = 1 } }
             .padding(.horizontal)
             .padding(.vertical, 10)
 
