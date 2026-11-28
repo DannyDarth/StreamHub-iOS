@@ -286,6 +286,18 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         }
         const s = window.__sh;
         const ad = p && (p.classList.contains("ad-showing") || p.classList.contains("ad-interrupting"));
+        // the best quality YouTube has for it (its mobile page starts phones on 360p), also for
+        // the ones loading ahead; asked again every few seconds until it sticks
+        try {
+          if (!ad && p && typeof p.getAvailableQualityLevels === "function" && Date.now() - (window.__shQ || 0) > 3000) {
+            const best = p.getAvailableQualityLevels().find((q) => q && q !== "auto");
+            if (best && p.getPlaybackQuality() !== best) {
+              window.__shQ = Date.now();
+              if (p.setPlaybackQualityRange) p.setPlaybackQualityRange(best, best);
+              if (p.setPlaybackQuality) p.setPlaybackQuality(best);
+            }
+          }
+        } catch (e) {}
         if (s.hold || s.paused) {
           if (!v.paused) v.pause();
         } else if (v.paused && v.readyState > 1 && !ad) {
