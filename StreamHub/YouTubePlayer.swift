@@ -277,6 +277,13 @@ final class YouTubeWebPlayer: NSObject, ObservableObject, WKNavigationDelegate, 
         const p = document.querySelector(".html5-video-player");
         if (!v) return;
         v.loop = true;
+        // pinned to the whole view, centred (YouTube's page sizes its player taller than the
+        // view, which pushed the Short down and cut off its bottom)
+        for (const [k, val] of Object.entries({ position: "fixed", top: "0", left: "0", right: "0", bottom: "0",
+                                                 width: "100%", height: "100%", "object-fit": "contain",
+                                                 "z-index": "2147483001", background: "#000", transform: "none" })) {
+          if (v.style.getPropertyValue(k) !== val) v.style.setProperty(k, val, "important");
+        }
         const s = window.__sh;
         const ad = p && (p.classList.contains("ad-showing") || p.classList.contains("ad-interrupting"));
         if (s.hold || s.paused) {
